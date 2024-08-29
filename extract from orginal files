@@ -1,0 +1,526 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Jan 17 15:38:55 2023
+
+@author: khosole
+"""
+# This code reads three failure data frames (Infrafel_och_tagstorande_fel_m_vaxeltyp_2010-2018.csv ,data_offelia_2001_2010.pickle , OFELIA 20190101-20230816_p1.csv )
+# concat them to make one data frame (data_all)
+# Calculate repair time
+# extract climate_id     I update juohan cod
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from datetime import date
+from datetime import time
+import datetime
+#%% Read ofelio files  and concating both files
+
+
+df2018=pd.read_csv(Infrafel_och_tagstorande_fel_m_vaxeltyp_2010-2018.csv', sep=';')
+df2001=pd.read_pickle(data_offelia_2001_2010.pickle')
+df2023 = pd.read_csv(OFELIA 20190101-20230816_p1.csv' )
+df2023=df2023.dropna(subset=['Vidareanmält', 'Avhjälpt']) # drop records with empty submitted date
+df2023=df2023.reset_index()
+
+df2001.rename(columns={"Merförsening (+  min)": "Merförsening (+ 5 min)"},inplace=True)
+
+# replace '.' asing with ':' in time data---------------------
+for n,x in enumerate(df2001['Anmält datum'].values):
+    if isinstance(x,str):
+        df2001['Anmält datum'].iloc[n] = x.replace('.',':') 
+#df2001['Anmält datum'] = df2001['Anmält datum'].apply(lambda x: x.replace('.', ':') if isinstance(x, str) else x)
+        
+
+t_str1 = [x.replace('.',':') for x in df2018['Anmält datum'].values]  # befor code did not work for df2018
+df2018['Anmält datum'] = pd.Series(t_str1)
+#------------------------------------------------------------------------------------------------------
+df2018= df2018.loc[df2018['Vidareanmält']>'2010-12-30']  # data for 2010 year is in both file. remove from df2018
+
+df2018=df2018.dropna(subset=['Vidareanmält', 'Avhjälpt'])# drop records with empty submitted date
+df2018=df2018.reset_index()
+
+df2001=df2001.dropna(subset=['Vidareanmält', 'Avhjälpt'])# drop records with empty submitted date
+df2001=df2001.reset_index()
+
+clmn=['Felrapport', 'HändelseID', 'Tågstörande', 'Antal tåg',
+       'Merförsening (+ 5 min)', 'Orsakskod',
+       'Förklarande text till orsakskod', 'Anmält datum', 'Anstår',
+       'Vidareanmält', 'Påbörjat', 'Avhjälpt', 'Reparationstid DD:HH:MM',
+       'Inställelsetid DD:HH:MM', 'Underhålls-område', 'Stråk (G)',
+       'Bandel (G)', 'Plats fr (G)', 'Platssignatur från (G)',
+       'Plats till (G)', 'Platssignatur till (G)', 'Bantyp (G)',
+       'Anläggningsindivid (FR)', 'Anläggningstyp (BVS)', 'Växeltyp (ANL)',
+       'Typmodell (FR)', 'Anläggningsdel (BVS)', 'Modell: del',
+       'Komponent (FR)', 'Modell: kpt', 'Enhet (FR)', 'Modell: enh',
+       'Verkligt fel', 'Felbeskrivning', 'Symptom (FR)',
+       'Symptombeskrivning (FR)', 'Felorsak', 'Orsaksbeskrivning', 'Åtgärd',
+       'Åtgärdsbeskrivning']
+
+
+# There are different columns in these data frames. Selecting same columns for all dataframes.
+df2001=df2001[clmn]
+df2018=df2018[clmn]
+df2023=df2023[clmn]
+
+data_all=pd.concat([df2001,df2018, df2023] ,ignore_index=True)
+
+#%% Calculate repair time and Data cleaning
+
+data=data_all.copy()
+
+
+for key in ['Anmält datum','Vidareanmält','Påbörjat','Avhjälpt']:
+    data[key] = pd.to_datetime(data[key].values,format='mixed',errors='raise')
+
+# calculate repair time
+data['repair time']=data['Avhjälpt']-data['Påbörjat']
+rt=[]
+for x in data['repair time' ] :
+      rt.append(abs(x.days*24*60+x.seconds/60)) # convert repair time to minutes
+data['repair']=rt 
+
+# calculate time to respond repair
+data['install time']=data['Påbörjat']-data['Vidareanmält']
+dt=[]
+for x in data['install time'] : 
+      dt.append(x.days*24*60+x.seconds/60)  # convert install time to minutes
+data['install']=dt
+ 
+# Remove records with cause 'not fail' and repair time =0   ----------------------------------
+data.drop(data[(data['Verkligt fel']=='Inget fel') & ( data['Felorsak']=='Ingen känd orsak') & 
+               (data['Åtgärd']=='Ingen åtgärd') & (data['repair']== 0)].index , inplace=True )
+
+#---------------------------------------------------------------------------------------------
+data=data.drop_duplicates('Felrapport')
+data.reset_index(drop=True)
+
+#%% this part is Jouhan code to define climate ID that I updated it
+def contains(data_c,labels,IgnoreCase=True, output_sum = True):
+    #isstr = [isinstance(x,str) for x in data]
+    if IgnoreCase:
+        index = {label : [isinstance(x,str) and label.lower() in x.lower() for x in data_c] for label in labels}
+    else:
+        index = { label : [isinstance(x,str) and label in x for x in data_c] for label in labels}
+    if output_sum:
+        s = {fn : sum(index[fn]) for fn in index.keys()}
+        return index, s
+    else:
+        return index
+
+#%% Initialize variables
+antal = {}
+lista = {}
+klimat = {}
+klimat_id = {}
+#%% Orsakskod
+lista['Orsakskod'] = np.unique(data['Orsakskod'])
+klimat['Orsakskod'] = ['ONA -','ONA 01','ONA 02', 'ONA 03', 'ONA 04','ONA 05','ONA 06', 'OVÄ -','IFK -','IFK 01','IFK 02']
+orsakskod_Index, antal['Orsakskod'] = contains(data['Orsakskod'],klimat['Orsakskod'],IgnoreCase=True,output_sum=True)
+
+#%% Symptom
+lista['Symptom (FR)'] = np.unique(data['Symptom (FR)'])
+klimat['Symptom (FR)'] = ['Avvattning','Brand','Extrema naturhändelser',
+                  'Framkomlighet i spår pga. väder','Kyla','Lavin',
+                  'Naturhändelser','Oväder','Skred',
+                  'Snö och is','Spårväxelfel snöoväder','Storm/Snöstorm',
+                  'Översvämning','Åska','Snögalleri']
+symptom_Index, antal['Symptom (FR)'] = contains(data['Symptom (FR)'],klimat['Symptom (FR)'])
+
+#%% 'Förklarande text till orsakskod'
+fn = 'Förklarande text till orsakskod'
+isStr = [isinstance(x,str) for x in data[fn]]
+lista[fn] = np.unique(data[fn][isStr])
+klimat[fn] = ['Avvattning','Brand','Skred', 'Snö och is','Snögalleri', 'Åska']
+Forklarande_Index, antal[fn] = contains(data[fn],klimat[fn])
+
+#%% Felorsak
+lista['Felorsak'] = np.unique(data['Felorsak'])
+klimat['Felorsak'] = ['Brand','Kraftig blåst/Storm','Onormal temperatur',
+                  'Snö eller is','Åska',
+                  'Spårhalka']
+felorsak_Index, antal['Felorsak'] = contains(data['Felorsak'],klimat['Felorsak'])
+
+#%% Verkligt fel
+lista['Verkligt fel'] = np.unique(data['Verkligt fel'])
+klimat['Verkligt fel'] = ['Avvikande temperatur','Brand','Väderrelaterat','Solkurva']
+verkligt_fel_Index, antal['Verkligt fel'] = contains(data['Verkligt fel'],klimat['Verkligt fel'])
+#%% ADDING NEW COLUMN TO THE DATA FOR CLIMATE CODE
+
+    
+data['klimat_id']='is not identified'
+    
+def klimat_Kod(kod):
+    if kod=='IFK -':
+        return  'Accessibility in the tracks due.weather'
+    elif kod=='IFK 01':
+        return  'Slippery_Track'
+    elif kod=='IFK 02':
+        return 'Snow and ice'
+    elif kod=='ONA -':
+        return'Extreme natural events'
+    elif kod=='ONA 01':
+        return'Fire'
+    elif kod=='ONA 02':
+        return'Flood'
+    elif kod=='ONA 03':
+        return'Storm / Snowstorm'
+    elif kod=='ONA 04':
+        return'Avalanche'
+    elif kod=='ONA 05':
+        return'Landslide'
+    elif kod=='ONA 06':
+        return'Cold'
+    elif kod=='OVÄ -':
+
+        return'Inclement weather in the yard'
+    else: 
+        return 'is not identified'    
+    
+data['klimat_id']=data['Orsakskod'].apply(klimat_Kod)
+#data.to_excel(r'C:/Users/amigar/OneDrive - ltu.se/CliMaint Project/Data/new_data_felcode1.xlsx',index=False)
+
+#%%
+# here we write in the 'klimat_id' column  the type of impacts and consider thows rows that was not 
+# considered in prevous steps
+
+klimat_trans_Verkligt_fel={'Avvikande temperatur':'Abnormal temperature', 'Brand':'Fire', 'Väderrelaterat':'Weather related', 'Solkurva':'Bukling'}
+
+#klimat_trans_Felorsak[1]
+d=[]
+#d=data[felorsak_Index['Brand']]['klimat_id'].apply(empty_cell)
+#count=0
+for item in klimat['Verkligt fel']:
+    d=data[verkligt_fel_Index[item]]['klimat_id']
+    
+    for row in d.index:
+          if data['klimat_id'][row] == 'is not identified':
+            data['klimat_id'][row]=klimat_trans_Verkligt_fel[item]
+      #    
+  #  count+=1
+data['klimat_id'].value_counts()
+
+
+
+#%%
+# here we write in the 'klimat_id' column  the type of impacts and consider thows rows that was not 
+# considered in prevous steps
+
+klimat_trans_Symptom={'Spårväxelfel snöoväder':'Trackswitch error snow storms','Avvattning':'Drainage','Brand': 'Fire', 'Extrema naturhändelser':'Extreme natural events',
+                      'Framkomlighet i spår pga. väder':'Accessibility in the tracks due.weather',
+                      'Kyla':'Cold','Lavin':'Avalanche','Naturhändelser':'Nature Events', 
+                      'Skred':'Landslide','Snö och is':'Snow and ice',
+                      'Oväder':'Storm', 
+                      'Storm/Snöstorm':'Storm / Snowstorm', 'Översvämning':'Flood','Åska':'Thunderstorm' , 'Snögalleri':'Snow galleri'}
+
+#klimat_trans_Felorsak[1]
+d=[]
+#d=data[felorsak_Index['Brand']]['klimat_id'].apply(empty_cell)
+#count=0
+for item in klimat['Symptom (FR)']:
+    d=data[symptom_Index[item]]['klimat_id']
+    
+    for row in d.index:
+          if data['klimat_id'][row] == 'is not identified':
+            data['klimat_id'][row]=klimat_trans_Symptom[item]
+      #    
+  #  count+=1
+data['klimat_id'].value_counts()
+#%%  Felorsak'
+# here we write in the 'klimat_id' column  the type of impacts and consider thows rows that was not 
+# considered in prevous steps
+
+klimat_trans_Felorsak={'Brand':'Fire', 
+                       'Kraftig blåst/Storm':'Heavy Blown/Storm', 
+                       'Onormal temperatur':'Abnormal temperature', 
+                       'Snö eller is':'Snow and ice',
+                        'Åska':'Thunderstorm', 
+                       'Spårhalka':'Slippery_Track', 
+                        }
+#klimat_trans_Felorsak[1]
+d=[]
+#d=data[felorsak_Index['Brand']]['klimat_id'].apply(empty_cell)
+for item in klimat['Felorsak']:
+    #print('Translation from %s to %s' %(item,klimat_trans_Felorsak[item]))
+    
+    d=data[felorsak_Index[item]]['klimat_id']
+    
+    for row in d.index:
+        if data['klimat_id'][row] == 'is not identified':
+            data['klimat_id'][row]=klimat_trans_Felorsak[item]
+     
+data['klimat_id'].value_counts()
+
+
+
+
+#%% 'Förklarande text till
+# here we write in the 'klimat_id' column  the type of impacts and consider thows rows that was not 
+# considered in prevous steps
+
+klimat_trans_fn={'Avvattning':'Drainage', 'Brand':'Fire', 'Skred':'Landslide', 'Snö och is':'Snow and ice', 'Snögalleri':'Snow galleri', 'Åska':'Thunderstorm'}
+#klimat_trans_Felorsak[1]
+d=[]
+#d=data[felorsak_Index['Brand']]['klimat_id'].apply(empty_cell)
+
+for item in klimat[fn]:
+    d=data[Forklarande_Index[item]]['klimat_id']
+    
+    for row in d.index:
+          if data['klimat_id'][row] == 'is not identified':
+            data['klimat_id'][row]=klimat_trans_fn[item]
+      #    
+    
+data['klimat_id'].value_counts()
+
+#%%  Felorsak'  and 'Extreme natural events'
+# here we write in the 'klimat_id' column  the type of impacts and consider thows rows that was not 
+# considered in prevous steps
+
+klimat_trans_Felorsak={'Brand':'Fire', 
+                       'Kraftig blåst/Storm':'Heavy Blown/Storm', 
+                       'Onormal temperatur':'Abnormal temperature', 
+                       'Snö eller is':'Snow and ice',
+                             'Åska':'Thunderstorm', 
+                       
+                        }
+#klimat_trans_Felorsak[1]
+d=[]
+kl=['Brand', 'Kraftig blåst/Storm', 'Onormal temperatur',  'Snö eller is', 'Åska']
+#d=data[felorsak_Index['Brand']]['klimat_id'].apply(empty_cell)
+for item in kl:
+    #print('Translation from %s to %s' %(item,klimat_trans_Felorsak[item]))
+    
+    d=data[felorsak_Index[item]]['klimat_id']
+    
+    for row in d.index:
+        if (data['klimat_id'][row] == 'Extreme natural events') or (data['klimat_id'][row] =='Accessibility in the tracks due.weather') or  (data['klimat_id'][row] =='Nature Events') or (data['klimat_id'][row] =='Inclement weather in the yard')or (data['klimat_id'][row] =='Weather related'):
+            data['klimat_id'][row]=klimat_trans_Felorsak[item]
+     
+data['klimat_id'].value_counts()
+#%% 'Åtgärd' and 'Snöröjning'
+# here we write in the 'klimat_id' column  the type of impacts and consider thows rows that was not 
+# considered in prevous steps
+klimat['Åtgärd']=['Snöröjning']
+
+action_Index, antal['Åtgärd'] = contains(data['Åtgärd'],klimat['Åtgärd'] )
+dd=data[action_Index['Snöröjning']]['klimat_id']
+
+
+month = data['Anmält datum'].dt.month
+data['month'] = month
+mnth=[1,2,3,4,5,9,10,11,12]
+
+for row in dd.index:
+      if (data['klimat_id'][row] == 'is not identified') and (data['month'][row] in mnth):
+        data['klimat_id'][row]='Snow and ice'
+
+#%%
+
+data.to_csv('OFELIA_Klimate_2000_2023_version2.csv')
+
+
+
+
+
+# the following code only for more check. 
+#For new database, finding duplicate and allocate unique Felrapport has been done in build_final_vxl_ofelia.py
+
+
+
+
+
+Orginal_Datafram=data.copy()
+
+bisdata=pd.read_csv(bisdata_vxl.csv')
+fail_klimat=pd.read_csv(failuretimedata_climate.csv')              
+failuretime=pd.read_csv(failuretimedata_1.csv') 
+ofeliavx=pd.read_csv(ofeliadata_vxl.csv') 
+
+
+# Felrapport with date is nan
+date_nan=Orginal_Datafram[Orginal_Datafram['Vidareanmält'].isna()]
+Orginal_Datafram.drop(Orginal_Datafram[Orginal_Datafram['Vidareanmält'].isna()].index , inplace=True)
+Orginal_Datafram=Orginal_Datafram.drop_duplicates('Felrapport')
+
+ofelia_klimat=pd.read_csv(r'C:\Users\seymah\Luleå University of Technology\Research collaboration-LTU - Documents\General\Khosro works\Main dataframes\Orginal dataframe\ofelia_klimat.csv') 
+ofelia_orginal=pd.merge(left=Orginal_Datafram, right=ofelia_klimat,  how='left', on='Felrapport',validate = 'm:1')  
+
+failtime=failuretime.copy()
+# There are some records with Zero failure time. delet them
+failtime.drop(failtime[failtime['FailureTime']==0].index ,inplace=True)
+
+#for f_row in range(len(failtime)):
+#    if failtime['FailureTime'][f_row]==0 :
+#        failtime['FailureTime'][f_row]=failtime['FailureTime'][f_row -1]
+
+
+#%% Finding duplicate and allocate unique Felrapport
+bisdata.rename(columns={"objnr": "Objnr"},inplace=True)
+#fail.set_index('Objnr')
+#bisdata.set_index('Objnr')
+extract_col=bisdata[['Objnr' , 'Pl/Str', 'Underhållsdistrikt']]      # extract region columns from bis file
+failure_region=pd.merge(left=failtime, right=extract_col, how='left' , on ='Objnr')   #add region in failure file
+
+failure_dup=failure_region[failure_region.duplicated('Felrapport')]   # identify duplicated felrapport
+failure_dup_na= failure_dup[failure_dup.Felrapport == 'na']     # duplicated row felrapport with nan content
+failure_dup_notna= failure_dup[failure_dup.Felrapport != 'na']  #  duplicated row felrapport with not nan content
+
+failure_nondup=failure_region.drop_duplicates('Felrapport')      # the data frame with unique felrapport (there is not duplicated row in this file)
+
+ofelia_obj=pd.merge(left=ofelia_orginal, right=failure_nondup , how='left' ,  on='Felrapport',validate = 'm:1')   #merging for allocating object number
+
+ofelia_obj['Objnr']=ofelia_obj['Objnr'].fillna(0)
+ofelia_obj['Objnr']=ofelia_obj['Objnr'].astype('int64')
+ofelia_obj['Objnr']=ofelia_obj['Objnr'].replace(0, 'not found')
+
+#dup=ofelia_obj[ofelia_obj.duplicated('Felrapport')]
+
+#assinged new felrapport ofr recods with same felrapport for diffrent objnr
+tem=[]
+tem=pd.merge(left=failure_dup_notna, right=ofelia_orginal , how='left' ,  on='Felrapport',validate = 'm:1', sort=True)
+#tem.loc[pd.to_numeric(tem.Felrapport, errors='coerce').sort_values().index]
+temp=tem.copy()
+#temp['Objnr'].astype('string')
+lis=[]
+for x in temp['Felrapport']:
+    st=pd.DataFrame()
+    st=temp[temp['Felrapport'].str.contains(x)]
+    st=st.reset_index()
+    i=0
+    for i in range(0,len(st)):
+        st['Felrapport'][i]=st['Felrapport'][i]+ '_' + str((i))
+        lis.append(st['Felrapport'][i])
+        
+    temp=temp.loc[temp['Felrapport']!=x]    
+     
+    
+tem['Felrapport']=lis   
+
+# ofelia_final=ofelia_obj.append(tem, ignore_index=True)    # add records with modyfied felrapport to database
+ofelia_final = pd.concat([ofelia_obj, tem], ignore_index=True)
+
+
+
+
+#%%  selecting Spårvaxel and calculating time to failure
+
+
+
+
+#add not failure (right censor)
+#ofelia_final=ofelia_final.append(failure_dup_na,ignore_index=True)
+ofelia_final=pd.concat([ofelia_final,failure_dup_na],ignore_index=True,)
+
+ofelia_final['Failure Time(h)']=ofelia_final['FailureTime']*24
+ofelia_final['CumFailureTime(h)']=ofelia_final['CumFailureTime']*24
+
+ 
+dfvxl=ofelia_final[ofelia_final['Anläggningstyp (BVS)']=='Spårväxel']     #selecting spårvaxel
+
+dfvxl['Anmält datum_x'] = pd.to_datetime(dfvxl['Anmält datum_x'].values,format='%Y-%m-%d %H:%M:%S',errors='raise')
+ 
+dfvxl['klimat_id']=dfvxl['klimat_id'].fillna('no climate reason')   #change nan klimat_id into 'no climate reason'
+
+dfvxl['Start datum'] = pd.to_datetime(dfvxl['Start datum'].values,format='%Y-%m-%d %H:%M:%S',errors='raise')
+dfvxl['Anmält datum_x'] = pd.to_datetime(dfvxl['Anmält datum_x'].values,format='%Y-%m-%d %H:%M:%S',errors='raise')
+dfvxl['Cum_failure_time']=dfvxl['Anmält datum_x']-dfvxl['Start datum']
+
+# unit based on houre
+seconds2hour = 1/(60*60)
+dfvxl['Cum_failure_time']= dfvxl['Cum_failure_time'].dt.total_seconds()*seconds2hour
+
+
+# Compute time between failures by johan function
+def time_between(cft):
+    # take difference of cumultative failure times
+    tbf = cft.diff()
+    
+    # replace first failure with fialure time
+    tbf.iloc[0] = cft.iloc[0]
+    return tbf
+
+dfvxl['Fail_Time'] = dfvxl.groupby('Objnr')['Cum_failure_time'].apply(time_between)
+
+#dfvxl.to_csv(r'C:\Users\khosole\khosro\Dataanalysis\khosro\Caret\Final Version\oflelio_vaxel_allcol.csv')
+#dfvxl.to_excel(r'C:\Users\khosole\khosro\Dataanalysis\khosro\Caret\Final Version\oflelio_vaxel_allcol.xlsx')   
+
+col=['Felrapport', 'Objnr', 'Tågstörande','Anstår',  'Anmält datum_x',  
+     'Vidareanmält', 'Påbörjat', 'Avhjälpt', 'Reparationstid DD:HH:MM', 'Inställelsetid DD:HH:MM', 'Underhålls-område', 'klimat_id', 'Start datum',  
+     'Pl/Str', 'Underhållsdistrikt', 'repair', 'dellay', 'Fail_Time','Cum_failure_time', 
+     'Växeltyp (ANL)','Stråk (G)',   'Bandel (G)', 'Plats fr (G)', 'Platssignatur från (G)', 'Plats till (G)', 'Platssignatur till (G)', 'Bantyp (G)', 
+     'Anläggningsindivid (FR)',  'Typmodell (FR)', 'Anläggningsdel (BVS)', 'Modell: del','Komponent (FR)', 'Modell: kpt', 'Enhet (FR)',  'Verkligt fel', 
+     'Felbeskrivning', 'Symptom (FR)', 'Symptombeskrivning (FR)', 'Felorsak', 'Orsaksbeskrivning', 'Åtgärd','Orsakskod', 'Förklarande text till orsakskod', 
+     'Åtgärdsbeskrivning',  'Merförsening (+ 5 min)','Antal tåg' ]
+df_vaxel=dfvxl[col]
+#%%
+df_vaxel.to_csv(r'C:\Users\khosole\khosro\Dataanalysis\khosro\Caret\Final Version\oflelio_vaxel_version3.csv')
+# output of this cod use on calculating_cost cod for computing repair cost
+####################################################################################################
+#######################################################################################################
+#%%    Nord region
+
+ofeila_nord=df_vaxel[(df_vaxel['Underhålls-område']=='Nord')]
+mydata=ofeila_nord.copy()
+mydata['klimat_id']=mydata['klimat_id'].fillna('no climate reason')   #change nan klimat_id into 'no climate reason'
+# delete Not found objective
+indexnames = mydata[(mydata['Objnr'] == 'not found')].index
+mydata.drop(indexnames, inplace=True)
+	
+
+data_repair=mydata[ (mydata['repair']<480)]
+
+#data_repair.to_excel('C:/Users/khosole/khosro/Dataanalysis/Khosro/My Data Cleaning/data_nord_repair.xlsx',sheet_name='data')
+#%% calculating Cumilative Failure Time and Failure time (for new database)
+
+
+#n_obj=data_repair.Objnr.value_counts()>20
+#print(n_obj.index)
+#nr=data_repair.groupby('Objnr')['Objnr'].value_counts()
+#3070010 in n_obj.index
+
+
+data_repair['Start datum'] = pd.to_datetime(data_repair['Start datum'].values,format='%Y-%m-%d %H:%M:%S',errors='raise')
+data_repair['Anmält datum_x'] = pd.to_datetime(data_repair['Anmält datum_x'].values,format='%Y-%m-%d %H:%M:%S',errors='raise')
+data_repair['Cum_failure_time']=data_repair['Anmält datum_x']-data_repair['Start datum']
+
+# unit based on houre
+seconds2hour = 1/(60*60)
+data_repair['Cum_failure_time']= data_repair['Cum_failure_time'].dt.total_seconds()*seconds2hour
+
+
+# Compute time between failures
+def time_between(cft):
+    # take difference of cumultative failure times
+    tbf = cft.diff()
+    
+    # replace first failure with fialure time
+    tbf.iloc[0] = cft.iloc[0]
+    return tbf
+
+data_repair['Fail_Time'] = data_repair.groupby('Objnr')['Cum_failure_time'].apply(time_between)
+
+#%% Eport data to file
+col1=['Felrapport', 'Objnr', 'Tågstörande','Anstår',  'Anmält datum_x',  
+     'Vidareanmält', 'Påbörjat', 'Avhjälpt', 'Reparationstid DD:HH:MM', 'Inställelsetid DD:HH:MM', 'Underhålls-område', 'klimat_id', 'Start datum',  
+     'Pl/Str', 'Underhållsdistrikt', 'repair', 'dellay', 'Failure Time(h)','CumFailureTime(h)', 
+     'Växeltyp (ANL)','Stråk (G)',   'Bandel (G)', 'Plats fr (G)', 'Platssignatur från (G)', 'Plats till (G)', 'Platssignatur till (G)', 'Bantyp (G)', 
+     'Anläggningsindivid (FR)',  'Typmodell (FR)',  'Modell: del','Komponent (FR)', 'Modell: kpt', 'Enhet (FR)',  'Verkligt fel', 
+     'Felbeskrivning', 'Symptom (FR)', 'Symptombeskrivning (FR)', 'Felorsak', 'Orsaksbeskrivning', 'Åtgärd','Orsakskod', 'Förklarande text till orsakskod', 
+     'Åtgärdsbeskrivning',  'Merförsening (+ 5 min)','Antal tåg' ]
+
+df_allcolumns=data_repair[col1]
+df_allcolumns.to_excel('/data_nord_repair_allcolumns.xlsx',sheet_name='data')
+
+col2=['Felrapport', 'Objnr', 'Tågstörande', 'Anmält datum_x',  
+     'Vidareanmält', 'Påbörjat', 'Avhjälpt', 'Underhålls-område',   'Start datum',   'Pl/Str', 'repair', 'dellay', 'Cum_failure_time','Fail_Time',  'Växeltyp (ANL)','Stråk (G)', 
+       'Anläggningsindivid (FR)',  'Typmodell (FR)', 'Anläggningsdel (BVS)', 'Komponent (FR)',  'Verkligt fel', 'Felbeskrivning', 'Symptom (FR)', 'Symptombeskrivning (FR)', 'Felorsak', 'Orsaksbeskrivning', 'klimat_id','Åtgärd','Orsakskod', 
+      'Förklarande text till orsakskod', 'Åtgärdsbeskrivning',  'Merförsening (+ 5 min)',
+      'Antal tåg' ]
+
+df_selectedcolumns=data_repair[col2]
+df_selectedcolumns.to_excel('C:/Users/khosole/khosro/Dataanalysis/Khosro/My Data Cleaning/data_nord_repair_selectedcolumns.xlsx',sheet_name='data')
+#%%
+
+
+
