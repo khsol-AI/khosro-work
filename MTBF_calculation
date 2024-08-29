@@ -1,0 +1,90 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Feb 24 11:25:05 2023
+
+@author: khosole
+"""
+###  calculating MTBF for each action and part
+import pandas as pd
+from scipy.special import gamma
+
+dfs=pd.read_excel(mtbf switch.xlsx')
+dfc=pd.read_excel('mtbf crossing.xlsx')
+dfh=pd.read_excel('mtbf heating.xlsx')
+dfp=pd.read_excel('mtbf point machin.xlsx')
+
+#%% Functio for calculate MTBF
+
+def MTBF_get(df,time):
+    i=0
+    temp=[0 for x in range(len(df))]
+    
+    for i in range(0,len(df['Distribution'])):
+        if  df['Distribution'][i]==1 :
+             temp[i]= 8760/((time/df['theta'][i])**(df['beta'][i])-((time-8760)/df['theta'][i])**(df['beta'][i]))
+             # temp[i]=((time/df['theta'][i])**(df['beta'][i])-((time-8760)/df['theta'][i])**(df['beta'][i]))
+        if  df['Distribution'][i]==2 :
+            temp[i]=df['theta'][i]*gamma(1+(1/df['beta'][i]))
+        if   df['Distribution'][i]==3:
+             temp[i]=df['theta'][i]*gamma(1+(1/df['beta'][i]))+df['t0'][i]
+    return temp         
+#%%
+def LCC_get (df,col):
+    return ((df['MTTR']*df['Cost (kr/min)'])/df[col]).sum()
+
+#%%
+'''def test(df, year):
+    return MTBF_get(dfs,157752)
+dfs['MTBF1']=MTBF_get(dfs,yr)
+dfc['MTBF1']=MTBF_get(dfc,yr)
+dfp['MTBF1']=MTBF_get(dfp,yr)
+dfh['MTBF1']=MTBF_get(dfh,yr)
+
+lcc1=(LCC_get(dfs,'MTBF1' )+LCC_get(dfc,'MTBF1')+LCC_get(dfp, 'MTBF1')+LCC_get(dfh,'MTBF1'))*1258
+'''
+
+
+for idx in range(1,31):
+    dfs['MTBF'+str(idx)]=MTBF_get(dfs,idx*8760)
+    dfc['MTBF'+str(idx)]=MTBF_get(dfc,idx*8760)
+    dfp['MTBF'+str(idx)]=MTBF_get(dfp,idx*8760)
+    dfh['MTBF'+str(idx)]=MTBF_get(dfh,idx*8760)
+
+lc=sum(1/(1.04)**(x+1)  for x in range(30))*(LCC_get(dfs,'MTBF')+LCC_get(dfc,'MTBF')+LCC_get(dfp,'MTBF')+LCC_get(dfh,'MTBF'))*1258
+#%%  MTBF caculation
+yr=8760
+colname='MTBF' 
+
+def test (no_yr):
+    dfs[colname+str(no_yr)]=MTBF_get(dfs,no_yr*yr)
+    dfc[colname+str(no_yr)]=MTBF_get(dfc,no_yr*yr)
+    dfp[colname+str(no_yr)]=MTBF_get(dfp,no_yr*yr)
+    dfh[colname+str(no_yr)]=MTBF_get(dfh,no_yr*yr)
+   
+    return sum(1/(1.04)**(x+1)  for x in range(no_yr))*(LCC_get(dfs,colname+str(no_yr) )+LCC_get(dfc,colname+str(no_yr))+LCC_get(dfp, colname+str(no_yr))+LCC_get(dfh,colname+str(no_yr)))*1258
+
+ #%% LCC calculation------  this section has problem   
+'''def getllc_action (act,dframe):
+    act_row=dframe[dframe['Action']==act]
+    return sum((1/(1.04)**(x+1)) *((act_row['MTTR']*act_row['Cost (kr/min)'])/act_row['MTBF'+str(x+1)])  for x in range(18))
+ actlcc= getllc_action ('Snöröjning', dfh)'''
+
+lcc=[0 for x in range(31)]
+lcc[0]=0
+for j in range(1,31):
+    lcc[j]=test(j)
+    
+
+
+
+df_LCC = pd.DataFrame({'Year': pd.Series(dtype='int'),'LCC': pd.Series(dtype='float')})
+df_LCC['LCC']=lcc
+df_LCC['Year']=df_LCC.index
+
+#%%
+dfs.to_excel('Anoual_mtbf_switch 30_new1.xlsx',sheet_name='data')
+dfc.to_excel('Anoual_mtbf_crossing 30_new1.xlsx',sheet_name='data')
+dfp.to_excel('Anoual_mtbf_pointmachine 30_new1.xlsx',sheet_name='data')
+dfh.to_excel('Anoual_mtbf_Heating 30_new1.xlsx',sheet_name='data')
+
+
