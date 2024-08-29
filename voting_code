@@ -1,0 +1,948 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Apr 22 14:51:26 2024
+
+@author: khosole
+"""
+
+
+
+import numpy as np
+import pandas as pd
+from datetime import date
+from datetime import time
+import datetime
+import seaborn as sns
+import matplotlib.pyplot as plt
+from imblearn.over_sampling import RandomOverSampler
+from sklearn.model_selection import RandomizedSearchCV,train_test_split
+from sklearn.datasets import make_classification
+from sklearn.metrics import roc_curve, auc
+from sklearn.metrics import accuracy_score, classification_report,confusion_matrix,ConfusionMatrixDisplay
+from sklearn.metrics import accuracy_score
+import time
+
+#%%
+#    Read ofelia for add needed columns on data frame
+data = pd.read_csv(r'data_samesize_12hour.csv' , index_col=0)
+data=data.sort_values(by='Anmält datum')
+data=data.reset_index()
+#  needed Parameter
+Weather_Par=['Temperature min','WindSpeed max','Humidity max' ,'Snow sum','Rain sum', 'Temperature Change' ] 
+ 
+
+Dum_par=['Asset type','Railway class','Region', 'month', 'distance(km)','Repair'	]
+
+
+
+St=['climate Code']
+ag=['Age']
+
+sns.set(font_scale=1)
+data_cor=data[Weather_Par+Dum_par+ag+St]
+correlation_matrix=data_cor.corr()  # corolation matrix
+plt.figure(figsize=(16,14))
+sns.heatmap(correlation_matrix, annot=True, cmap="coolwarm", fmt=".2f", linewidths=.2, annot_kws={"rotation": 45})
+plt.title("Correlation Matrix")
+
+plt.figure(figsize=(16, 6))
+# define the mask to set the values in the upper triangle to True
+mask = np.triu(np.ones_like(data_cor.corr()))
+heatmap = sns.heatmap(data_cor.corr(), mask=mask, vmin=-1, vmax=1, annot=True, cmap='coolwarm')
+heatmap.set_title('Triangle Correlation Heatmap', fontdict={'fontsize':15}, pad=16)
+#plt.xticks(rotation=45) 
+
+#Feature collorating
+plt.figure(figsize=(8, 12))
+heatmap = sns.heatmap(data_cor.corr()[['climate Code']].sort_values(by='climate Code', ascending=False), vmin=-1, vmax=1, annot=True, cmap='BrBG')
+heatmap.set_title('Features Correlating ', fontdict={'fontsize':16}, pad=16)
+
+target ='climate Code'
+features =Weather_Par+ag+Dum_par
+
+train=data[data['Anmält datum']<'2021-01-01']
+tst=data[data['Anmält datum']>'2021-01-01']
+
+X_train, X_test=train[features] , tst[features]
+y_train, y_test =train[target] , tst[target]
+
+'''
+#features =ag+Weather_Par
+X =data[features]
+y = data[target]
+# Split the dataset into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+'''
+
+#%% # Calculate class weights
+from sklearn.utils.class_weight import compute_class_weight, compute_sample_weight
+
+classes = np.unique(y_train)
+#cl=np.array([3,0.5])
+class_weights = compute_class_weight(class_weight='balanced', classes=classes, y=y_train)
+sample_weights = compute_sample_weight(class_weight=dict(zip(classes, class_weights )), y=y_train) # calculate wieght of sample
+# Create a dictionary of class weights
+class_weight_dict = dict(zip(np.unique(y_train), class_weights))
+#weights = compute_sample_weight(y_train)
+
+#%%             Random Forest
+from sklearn.ensemble import RandomForestClassifier
+#from sklearn.model_selection import cross_val_score, KFold
+from sklearn.preprocessing import StandardScaler
+import shap
+# Feature Scaling
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+rf_model = RandomForestClassifier(  max_depth=20, n_estimators=100,min_samples_leaf=10,  random_state=42,n_jobs=-1) #,class_weight=class_weight_dict  n_jobs=-1, random_state=42
+start_time = time.time()
+rf_model.fit(X_train_scaled, y_train, sample_weight=sample_weights)# sample weight
+end_time = time.time()
+elapsed_time = end_time - start_time
+print("Training time:", elapsed_time)
+y_pred_rf=rf_model.predict(X_test_scaled)
+
+ACCU_RF=pd.DataFrame(classification_report(y_test, y_pred_rf,output_dict=True)).transpose()
+
+#----------------- confusion_matrix
+cm_rf = confusion_matrix(y_test, y_pred_rf)
+plt.figure(figsize=(8, 6))
+#sns.set(font_scale=4)
+h=sns.heatmap(cm_rf, annot=True, fmt="d", cmap="Blues", cbar=False, annot_kws={"fontsize": 48} )
+#plt.title(" Random Forest ", fontsize=35)
+h.set_xticklabels(['NC', 'C'],fontsize=35)
+h.set_yticklabels(['NC', 'C'],fontsize=35)
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+sns.set(font_scale=1)
+#--------------feature_importances
+# Create a series containing feature importances from the model and feature names from the training data
+feature_importances = pd.Series(rf_model.feature_importances_, index=X_train.columns).sort_values(ascending=False)
+# Plot a simple bar chart
+plt.figure(figsize=(8, 6))
+feature_importances.plot.bar( )
+plt.title(" Random Forest ")
+
+#---------------ROC
+fpr, tpr, thresholds = roc_curve(y_test, y_pred_rf)
+roc_auc = auc(fpr, tpr)
+# Plotting the ROC curve
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate (1 - Specificity)')
+plt.ylabel('True Positive Rate (Sensitivity)')
+plt.title('ROC for Random Forest')
+plt.legend(loc='lower right')
+plt.show()
+
+#%%
+
+data24 = pd.read_csv(r'data_samesize_24hour.csv' , index_col=0)
+data24=data24.sort_values(by='Anmält datum')
+data24=data24.reset_index()
+
+train24=data24[data24['Anmält datum']<'2021-01-01']
+tst24=data24[data24['Anmält datum']>'2021-01-01']
+
+X_train24, X_test24=train24[features] , tst24[features]
+y_train24, y_test24 =train24[target] , tst24[target]
+
+#%% # Calculate class weights
+from sklearn.utils.class_weight import compute_class_weight, compute_sample_weight
+
+classes = np.unique(y_train24)
+#cl=np.array([3,0.5])
+class_weights = compute_class_weight(class_weight='balanced', classes=classes, y=y_train24)
+sample_weights = compute_sample_weight(class_weight=dict(zip(classes, class_weights )), y=y_train) # calculate wieght of sample
+# Create a dictionary of class weights
+class_weight_dict = dict(zip(np.unique(y_train24), class_weights))
+#weights = compute_sample_weight(y_train)
+
+#%%             Random Forest
+from sklearn.ensemble import RandomForestClassifier
+#from sklearn.model_selection import cross_val_score, KFold
+from sklearn.preprocessing import StandardScaler
+import shap
+# Feature Scaling
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train24)
+X_test_scaled = scaler.transform(X_test24)
+
+rf_model24 = RandomForestClassifier(  max_depth=20, n_estimators=100,min_samples_leaf=10,  random_state=42,n_jobs=-1) #,class_weight=class_weight_dict  n_jobs=-1, random_state=42
+start_time = time.time()
+rf_model24.fit(X_train_scaled, y_train24, sample_weight=sample_weights)# sample weight
+end_time = time.time()
+elapsed_time = end_time - start_time
+print("Training time:", elapsed_time)
+y_pred_rf24=rf_model.predict(X_test_scaled)
+
+ACCU_RF24=pd.DataFrame(classification_report(y_test24, y_pred_rf24,output_dict=True)).transpose()
+
+#----------------- confusion_matrix
+cm_rf = confusion_matrix(y_test24, y_pred_rf24)
+plt.figure(figsize=(8, 6))
+#sns.set(font_scale=4)
+h=sns.heatmap(cm_rf, annot=True, fmt="d", cmap="Blues", cbar=False, annot_kws={"fontsize": 48} )
+#plt.title(" Random Forest ", fontsize=35)
+h.set_xticklabels(['NC', 'C'],fontsize=35)
+h.set_yticklabels(['NC', 'C'],fontsize=35)
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+sns.set(font_scale=1)
+#--------------feature_importances
+# Create a series containing feature importances from the model and feature names from the training data
+feature_importances = pd.Series(rf_model24.feature_importances_, index=X_train24.columns).sort_values(ascending=False)
+# Plot a simple bar chart
+plt.figure(figsize=(8, 6))
+feature_importances.plot.bar( )
+plt.title(" Random Forest ")
+
+#---------------ROC
+fpr, tpr, thresholds = roc_curve(y_test24, y_pred_rf24)
+roc_auc = auc(fpr, tpr)
+# Plotting the ROC curve
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate (1 - Specificity)')
+plt.ylabel('True Positive Rate (Sensitivity)')
+plt.title('ROC for Random Forest')
+plt.legend(loc='lower right')
+plt.show()
+#%%
+
+data48 = pd.read_csv(r'data_samesize_48hour.csv' , index_col=0)
+data48=data48.sort_values(by='Anmält datum')
+data48=data48.reset_index()
+
+train48=data48[data48['Anmält datum']<'2021-01-01']
+tst48=data48[data48['Anmält datum']>'2021-01-01']
+
+X_train48, X_test48=train48[features] , tst48[features]
+y_train48, y_test48 =train48[target] , tst48[target]
+
+#%% # Calculate class weights
+from sklearn.utils.class_weight import compute_class_weight, compute_sample_weight
+
+classes = np.unique(y_train48)
+#cl=np.array([3,0.5])
+class_weights = compute_class_weight(class_weight='balanced', classes=classes, y=y_train48)
+sample_weights = compute_sample_weight(class_weight=dict(zip(classes, class_weights )), y=y_train) # calculate wieght of sample
+# Create a dictionary of class weights
+class_weight_dict = dict(zip(np.unique(y_train48), class_weights))
+#weights = compute_sample_weight(y_train)
+
+#%%             Random Forest
+from sklearn.ensemble import RandomForestClassifier
+#from sklearn.model_selection import cross_val_score, KFold
+from sklearn.preprocessing import StandardScaler
+import shap
+# Feature Scaling
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train48)
+X_test_scaled = scaler.transform(X_test48)
+
+rf_model48 = RandomForestClassifier(  max_depth=20, n_estimators=100,min_samples_leaf=10,  random_state=42,n_jobs=-1) #,class_weight=class_weight_dict  n_jobs=-1, random_state=42
+start_time = time.time()
+rf_model48.fit(X_train_scaled, y_train48, sample_weight=sample_weights)# sample weight
+end_time = time.time()
+elapsed_time = end_time - start_time
+print("Training time:", elapsed_time)
+y_pred_rf48=rf_model.predict(X_test_scaled)
+
+ACCU_RF48=pd.DataFrame(classification_report(y_test48, y_pred_rf48,output_dict=True)).transpose()
+
+#----------------- confusion_matrix
+cm_rf = confusion_matrix(y_test48, y_pred_rf48)
+plt.figure(figsize=(8, 6))
+#sns.set(font_scale=4)
+h=sns.heatmap(cm_rf, annot=True, fmt="d", cmap="Blues", cbar=False, annot_kws={"fontsize": 48} )
+#plt.title(" Random Forest ", fontsize=35)
+h.set_xticklabels(['NC', 'C'],fontsize=35)
+h.set_yticklabels(['NC', 'C'],fontsize=35)
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+sns.set(font_scale=1)
+#--------------feature_importances
+# Create a series containing feature importances from the model and feature names from the training data
+feature_importances = pd.Series(rf_model48.feature_importances_, index=X_train48.columns).sort_values(ascending=False)
+# Plot a simple bar chart
+plt.figure(figsize=(8, 6))
+feature_importances.plot.bar( )
+plt.title(" Random Forest ")
+
+#---------------ROC
+fpr, tpr, thresholds = roc_curve(y_test48, y_pred_rf48)
+roc_auc = auc(fpr, tpr)
+# Plotting the ROC curve
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate (1 - Specificity)')
+plt.ylabel('True Positive Rate (Sensitivity)')
+plt.title('ROC for Random Forest')
+plt.legend(loc='lower right')
+plt.show()
+#%%
+
+data72 = pd.read_csv(r'data_samesize_72hour.csv' , index_col=0)
+data72=data72.sort_values(by='Anmält datum')
+data72=data72.reset_index()
+
+train72=data72[data72['Anmält datum']<'2021-01-01']
+tst72=data72[data72['Anmält datum']>'2021-01-01']
+
+X_train72, X_test72=train72[features] , tst72[features]
+y_train72, y_test72 =train72[target] , tst72[target]
+
+#%% # Calculate class weights
+from sklearn.utils.class_weight import compute_class_weight, compute_sample_weight
+
+classes = np.unique(y_train72)
+#cl=np.array([3,0.5])
+class_weights = compute_class_weight(class_weight='balanced', classes=classes, y=y_train72)
+sample_weights = compute_sample_weight(class_weight=dict(zip(classes, class_weights )), y=y_train) # calculate wieght of sample
+# Create a dictionary of class weights
+class_weight_dict = dict(zip(np.unique(y_train72), class_weights))
+#weights = compute_sample_weight(y_train)
+
+#%%             Random Forest
+from sklearn.ensemble import RandomForestClassifier
+#from sklearn.model_selection import cross_val_score, KFold
+from sklearn.preprocessing import StandardScaler
+import shap
+# Feature Scaling
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train72)
+X_test_scaled = scaler.transform(X_test72)
+
+rf_model72 = RandomForestClassifier(  max_depth=20, n_estimators=100,min_samples_leaf=10,  random_state=42,n_jobs=-1) #,class_weight=class_weight_dict  n_jobs=-1, random_state=42
+start_time = time.time()
+rf_model72.fit(X_train_scaled, y_train72, sample_weight=sample_weights)# sample weight
+end_time = time.time()
+elapsed_time = end_time - start_time
+print("Training time:", elapsed_time)
+y_pred_rf72=rf_model.predict(X_test_scaled)
+
+ACCU_RF72=pd.DataFrame(classification_report(y_test72, y_pred_rf72,output_dict=True)).transpose()
+
+#----------------- confusion_matrix
+cm_rf = confusion_matrix(y_test72, y_pred_rf72)
+plt.figure(figsize=(8, 6))
+#sns.set(font_scale=4)
+h=sns.heatmap(cm_rf, annot=True, fmt="d", cmap="Blues", cbar=False, annot_kws={"fontsize": 48} )
+#plt.title(" Random Forest ", fontsize=35)
+h.set_xticklabels(['NC', 'C'],fontsize=35)
+h.set_yticklabels(['NC', 'C'],fontsize=35)
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+sns.set(font_scale=1)
+#--------------feature_importances
+# Create a series containing feature importances from the model and feature names from the training data
+feature_importances = pd.Series(rf_model72.feature_importances_, index=X_train72.columns).sort_values(ascending=False)
+# Plot a simple bar chart
+plt.figure(figsize=(8, 6))
+feature_importances.plot.bar( )
+plt.title(" Random Forest ")
+
+#---------------ROC
+fpr, tpr, thresholds = roc_curve(y_test72, y_pred_rf72)
+roc_auc = auc(fpr, tpr)
+# Plotting the ROC curve
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate (1 - Specificity)')
+plt.ylabel('True Positive Rate (Sensitivity)')
+plt.title('ROC for Random Forest')
+plt.legend(loc='lower right')
+plt.show()
+
+
+#%%
+from sklearn.ensemble import VotingClassifier
+# Create the voting classifier with soft voting
+voting_clf = VotingClassifier(estimators=[('model1', rf_model), ('model2', rf_model24),('model3', rf_model48), ('model4', rf_model72)], voting='soft')
+
+
+
+d = pd.read_csv(r'data_all_72hour.csv', index_col=0)
+
+#  needed Parameter
+Weather_Par=['Temperature min','WindSpeed max','Humidity max' ,'Snow sum','Rain sum', 'Temperature Change' 
+             , 'Temperature min_48','WindSpeed max_48','Humidity max_48' ,'Snow sum_48','Rain sum_48', 'Temperature Change_48'
+             ,'Temperature min_24','WindSpeed max_24','Humidity max_24' ,'Snow sum_24','Rain sum_24', 'Temperature Change_24'
+             ,'Temperature min_12','WindSpeed max_12','Humidity max_12' ,'Snow sum_12','Rain sum_12', 'Temperature Change_12'] 
+ 
+
+Dum_par=['Asset type','Railway class','Region', 'month', 'distance(km)','Repair'	]
+
+
+
+St=['climate Code']
+ag=['Age']
+
+sns.set(font_scale=1)
+data_cor=d[Weather_Par+Dum_par+ag+St]
+correlation_matrix=data_cor.corr()  # corolation matrix
+plt.figure(figsize=(16,14))
+sns.heatmap(correlation_matrix, annot=True, cmap="coolwarm", fmt=".2f", linewidths=.2, annot_kws={"rotation": 45})
+plt.title("Correlation Matrix")
+
+plt.figure(figsize=(16, 6))
+# define the mask to set the values in the upper triangle to True
+mask = np.triu(np.ones_like(data_cor.corr()))
+heatmap = sns.heatmap(data_cor.corr(), mask=mask, vmin=-1, vmax=1, annot=True, cmap='coolwarm')
+heatmap.set_title('Triangle Correlation Heatmap', fontdict={'fontsize':15}, pad=16)
+#plt.xticks(rotation=45) 
+
+#Feature collorating
+plt.figure(figsize=(8, 12))
+heatmap = sns.heatmap(data_cor.corr()[['climate Code']].sort_values(by='climate Code', ascending=False), vmin=-1, vmax=1, annot=True, cmap='BrBG')
+heatmap.set_title('Features Correlating ', fontdict={'fontsize':16}, pad=16)
+
+target ='climate Code'
+features =Weather_Par+ag+Dum_par
+#features =ag+Weather_Par
+X_a =d[features]
+y_a = d[target]
+
+
+voting_clf.fit(X_a, y_a)
+# Make predictions
+y_pred_v = voting_clf.predict(X_a)
+
+# Calculate accuracy
+accuracy = accuracy_score(y_a, y_pred_v)
+print("Accuracy:", accuracy)
+
+ACCU_RF_v=pd.DataFrame(classification_report(y_a, y_pred_v,output_dict=True)).transpose()
+
+
+#%%  validation for data in 2023.  first train model with data form 2000 till 2022 and then use data 2023 for test sample
+df_val=pd.read_csv(r'C:\Users\khosole\OneDrive - ltu.se\Khosro works\Data for Machin Learning\New database\data_samesize_val_12houre.csv' )
+
+X_val =df_val[features]
+y_val= df_val[target]
+
+X_val_scaled = scaler.transform(X_val)
+X_scaled = scaler.transform(X)
+
+classv = np.unique(y)
+class_weightsv = compute_class_weight(class_weight='balanced', classes=classv, y=y)
+sample_weightsv = compute_sample_weight(class_weight=dict(zip(classv, class_weightsv )), y=y) # calculate wieght of sample
+# Create a dictionary of class weights
+class_weight_dictv = dict(zip(np.unique(y), class_weightsv))
+
+rfv_model = RandomForestClassifier(  max_depth=20, n_estimators=100,min_samples_leaf=10,  random_state=42,n_jobs=-1) #,class_weight=class_weight_dict  n_jobs=-1, random_state=42
+start_time = time.time()
+rfv_model.fit(X_scaled, y ,sample_weight=sample_weightsv)# sample weight    
+end_time = time.time()
+elapsed_time = end_time - start_time
+print("Training time:", elapsed_time)
+
+y_pred_val=rfv_model.predict(X_val_scaled)
+predictions = rfv_model.predict_proba(X_val_scaled)  #probabilities of labels/classes
+
+ACCU_RF_val=pd.DataFrame(classification_report(y_val, y_pred_val,output_dict=True)).transpose()
+
+cm_rf = confusion_matrix(y_val, y_pred_val)
+plt.figure(figsize=(8, 6))
+h=sns.heatmap(cm_rf, annot=True, fmt="d", cmap="Blues", cbar=False, annot_kws={"fontsize": 48})
+#plt.title(" Random Forest ",fontsize=35)
+h.set_xticklabels(['NC', 'C'],fontsize=35)
+h.set_yticklabels(['NC', 'C'],fontsize=35)
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+
+corr_classified_indices = (y_val == 1) & (y_pred_val == 0)
+correc_classified_class1_records = df_val.loc[corr_classified_indices]
+
+
+#%%  SHAP 
+explainer = shap.Explainer(rf_model, X)
+shap_values = explainer(X)
+class_to_show = 1
+shap.plots.beeswarm(shap_values[:,:,class_to_show] ,max_display=18, order=shap.Explanation.abs.mean(0))   # 
+
+
+class_to_show = 1
+shap.plots.beeswarm(shap_values[:,0:6,class_to_show])
+
+shap.plots.beeswarm(shap_values[:,6:,class_to_show])
+
+shap_val = explainer.shap_values(X_test)
+shap.summary_plot(shap_val, X_test)
+shap_val1 = explainer(X_test)
+shap.plots.beeswarm(shap_val1[:,:,class_to_show] , max_display=20, order=shap.Explanation.abs.mean(0))
+shap.plots.beeswarm(shap_val1[:,10:,class_to_show])
+
+
+#%% Naive Bayes
+from sklearn.naive_bayes import GaussianNB
+custom_priors = [0.8, 0.2]
+model_NB = GaussianNB(priors=custom_priors )
+start_time = time.time()
+model_NB.fit(X_train, y_train ,sample_weight=sample_weights  )  # 
+end_time = time.time()
+elapsed_time = end_time - start_time
+print("Training time:", elapsed_time)
+y_pred_nb=model_NB.predict(X_test)
+
+ACCU_NB=pd.DataFrame(classification_report(y_test, y_pred_nb,output_dict=True)).transpose()
+
+cm_nb = confusion_matrix(y_test, y_pred_nb)
+#ConfusionMatrixDisplay(confusion_matrix=cm_nb).plot()
+plt.figure(figsize=(8, 6))
+h=sns.heatmap(cm_nb, annot=True, fmt="d", cmap="Blues", cbar=False, annot_kws={"fontsize": 48} )
+#plt.title("Naive Bayesn", fontsize=35)
+h.set_xticklabels(['NC', 'C'],fontsize=35)
+h.set_yticklabels(['NC', 'C'],fontsize=35)
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+
+
+fpr, tpr, thresholds = roc_curve(y_test, y_pred_nb)
+roc_auc = auc(fpr, tpr)
+
+# Plotting the ROC curve
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate (1 - Specificity)')
+plt.ylabel('True Positive Rate (Sensitivity)')
+plt.title('ROC for Naive Bayses')
+plt.legend(loc='lower right')
+plt.show()
+
+from sklearn.metrics import roc_auc_score
+
+# Assuming y_true and y_scores are your true labels and predicted scores
+auc_score = roc_auc_score(y_test, y_pred_nb)
+print(f"AUC Score: {auc_score:.4f}")
+
+#%%           Logistic Regression
+from sklearn.linear_model import LogisticRegression
+
+model_LR = LogisticRegression(solver='lbfgs', max_iter=1000)
+start_time = time.time()
+model_LR.fit(X_train, y_train, sample_weight=sample_weights) #
+end_time = time.time()
+elapsed_time = end_time - start_time
+print("Training time:", elapsed_time)
+y_pred_lr=model_LR.predict(X_test)
+
+ACCU_LR=pd.DataFrame(classification_report(y_test, y_pred_lr,output_dict=True)).transpose()
+
+cm_lr = confusion_matrix(y_test, y_pred_lr)
+#ConfusionMatrixDisplay(confusion_matrix=cm_lr).plot()
+
+plt.figure(figsize=(8, 6))
+h=sns.heatmap(cm_lr, annot=True, fmt="d", cmap="Blues", cbar=False, annot_kws={"fontsize": 48})
+h.set_xticklabels(['NC', 'C'],fontsize=35)
+h.set_yticklabels(['NC', 'C'],fontsize=35)
+#plt.title("Logistic Regression",fontsize=35)
+
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+
+fpr, tpr, thresholds = roc_curve(y_test, y_pred_lr)
+roc_auc = auc(fpr, tpr)
+
+# Plotting the ROC curve
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate (1 - Specificity)')
+plt.ylabel('True Positive Rate (Sensitivity)')
+plt.title('ROC for Logistic Regression')
+plt.legend(loc='lower right')
+plt.show()
+
+#%%                 Decision Trees 
+from sklearn.tree import DecisionTreeClassifier
+tree_model = DecisionTreeClassifier()
+tree_model.fit(X_train, y_train, sample_weight=sample_weights)
+y_pred_tree=tree_model.predict(X_test)
+
+ACCU_Tree=pd.DataFrame(classification_report(y_test, y_pred_tree,output_dict=True)).transpose()
+
+cm_tree = confusion_matrix(y_test, y_pred_tree)
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm_tree, annot=True, fmt="d", cmap="Blues", cbar=False)
+plt.title("Decision Trees ")
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+
+# Create a series containing feature importances from the model and feature names from the training data
+feature_importances = pd.Series(tree_model.feature_importances_, index=X_train.columns).sort_values(ascending=False)
+# Plot a simple bar chart
+plt.figure(figsize=(8, 6))
+feature_importances.plot.bar( )
+plt.title("Decision Trees ")
+
+fpr, tpr, thresholds = roc_curve(y_test, y_pred_tree)
+roc_auc = auc(fpr, tpr)
+
+# Plotting the ROC curve
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate (1 - Specificity)')
+plt.ylabel('True Positive Rate (Sensitivity)')
+plt.title('ROC for Decision Tree')
+plt.legend(loc='lower right')
+plt.show()
+
+#%% lightgbm
+import lightgbm as lgb
+clf = lgb.LGBMClassifier(learning_rate=0.1,max_depth=8, max_bin=12,num_leaves=100,force_row_wise=True,seed = 42)  #,random_state=42
+
+start_time = time.time()
+clf.fit(X_train, y_train, eval_set=[(X_test,y_test),(X_train,y_train)], eval_metric='logloss' ,sample_weight=sample_weights)  #
+end_time = time.time()
+elapsed_time = end_time - start_time
+print("Training time:", elapsed_time)
+y_pred_lgb=clf.predict(X_test)
+
+ACCU_LGB=pd.DataFrame(classification_report(y_test, y_pred_lgb,output_dict=True)).transpose()
+
+#lgb.plot_importance(clf)
+#lgb.plot_metric(clf)
+
+cm_lgb = confusion_matrix(y_test, y_pred_lgb)
+plt.figure(figsize=(8, 6))
+h=sns.heatmap(cm_lgb, annot=True, fmt="d", cmap="Blues", cbar=False, annot_kws={"fontsize": 48})
+h.set_xticklabels(['NC', 'C'],fontsize=35)
+h.set_yticklabels(['NC', 'C'],fontsize=35)
+#plt.title(" Lightgbm ",fontsize=35)
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+
+# Create a series containing feature importances from the model and feature names from the training data
+feature_importances = pd.Series(clf.feature_importances_, index=X_train.columns).sort_values(ascending=False)
+# Plot a simple bar chart
+plt.figure(figsize=(8, 6))
+feature_importances.plot.bar( )
+plt.title(" Lightgbm  ")
+
+fpr, tpr, thresholds = roc_curve(y_test, y_pred_lgb)
+roc_auc = auc(fpr, tpr)
+
+# Plotting the ROC curve
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate (1 - Specificity)')
+plt.ylabel('True Positive Rate (Sensitivity)')
+plt.title('ROC for LightGBM')
+plt.legend(loc='lower right')
+plt.show()
+
+
+#%%                 XGBoost
+import xgboost as xgb
+# Create XGBoost classifier
+xgb_model = xgb.XGBClassifier(learning_rate=0.1,
+    n_estimators=500,
+    max_depth=5,
+    subsample=0.9,
+    colsample_bytree=0.8,
+    gamma=0,
+    min_child_weight=1,
+    reg_lambda=1,
+    reg_alpha=0,
+      objective='binary:logistic',
+    eval_metric='logloss'  )
+#objective="multi:softmax", num_class=3, seed=42
+# Train the model
+start_time = time.time()
+xgb_model.fit(X_train, y_train, sample_weight=sample_weights) #
+end_time = time.time()
+elapsed_time = end_time - start_time
+print("Training time:", elapsed_time)
+y_pred_xgb=xgb_model.predict(X_test)
+
+ACCU_XGB=pd.DataFrame(classification_report(y_test, y_pred_xgb,output_dict=True)).transpose()
+
+cm_xgb = confusion_matrix(y_test, y_pred_xgb)
+plt.figure(figsize=(8, 6))
+h=sns.heatmap(cm_xgb, annot=True, fmt="d", cmap="Blues", cbar=False, annot_kws={"fontsize": 48})
+h.set_xticklabels(['NC', 'C'],fontsize=35)
+h.set_yticklabels(['NC', 'C'],fontsize=35)
+#plt.title(" XGB " ,fontsize=35)
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+
+fpr, tpr, thresholds = roc_curve(y_test, y_pred_xgb)
+roc_auc = auc(fpr, tpr)
+
+# Plotting the ROC curve
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate (1 - Specificity)')
+plt.ylabel('True Positive Rate (Sensitivity)')
+plt.title('ROC for XGBoost')
+plt.legend(loc='lower right')
+plt.show()
+
+
+#%%    AdaBoost
+from sklearn.ensemble import AdaBoostClassifier
+from sklearn.tree import DecisionTreeClassifier
+
+# Specify the base learner (a decision tree in this case)
+base_classifier = DecisionTreeClassifier(max_depth=3)
+
+# Create the AdaBoost classifier
+adaboost_classifier = AdaBoostClassifier(base_classifier, n_estimators=150 ,learning_rate=0.1, random_state=42)
+
+start_time = time.time()
+
+adaboost_classifier.fit(X_train, y_train , sample_weight=sample_weights)
+
+end_time = time.time()
+elapsed_time = end_time - start_time
+print("Training time:", elapsed_time)
+
+
+# Predictions
+y_pred_ad = adaboost_classifier.predict(X_test)
+
+ACCU_Ada=pd.DataFrame(classification_report(y_test, y_pred_ad,output_dict=True)).transpose()
+
+#feature_importances =adaboost_classifier.feature_importances_
+feature_importances = pd.Series(adaboost_classifier.feature_importances_, index=X_train.columns).sort_values(ascending=False)
+# Plot a simple bar chart
+plt.figure(figsize=(8, 6))
+feature_importances.plot.bar( )
+plt.title(" Adaboost ")
+
+
+cm_Ada = confusion_matrix(y_test, y_pred_ad)
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm_Ada, annot=True, fmt="d", cmap="Blues", cbar=False)
+plt.title(" AdaBoost ")
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+
+fpr, tpr, thresholds = roc_curve(y_test, y_pred_ad)
+roc_auc = auc(fpr, tpr)
+
+# Plotting the ROC curve
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate (1 - Specificity)')
+plt.ylabel('True Positive Rate (Sensitivity)')
+plt.title('ROC for AdaBoost')
+plt.legend(loc='lower right')
+plt.show()
+
+
+#%%  SVM
+from sklearn.svm import SVC
+svm_classifier = SVC(kernel='rbf', C=1, gamma='scale', random_state=42)
+
+# Train the classifier on the training data
+svm_classifier.fit(X_train, y_train,sample_weight=sample_weights)
+
+# Make predictions on the test data
+y_pred_svc = svm_classifier.predict(X_test)
+
+# Evaluate the performance of the classifier
+accuracy = accuracy_score(y_test, y_pred_svc)
+print(f"Accuracy: {accuracy:.2f}")
+
+# Display classification report
+print("Classification Report:")
+print(classification_report(y_test, y_pred_svc))
+
+ACCU_svc=pd.DataFrame(classification_report(y_test,y_pred_svc,output_dict=True)).transpose()
+
+
+
+cm_svc = confusion_matrix(y_test, y_pred_svc)
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm_svc, annot=True, fmt="d", cmap="Blues", cbar=False)
+plt.title(" SVC ")
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+
+fpr, tpr, thresholds = roc_curve(y_test, y_pred_svc)
+roc_auc = auc(fpr, tpr)
+
+# Plotting the ROC curve
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate (1 - Specificity)')
+plt.ylabel('True Positive Rate (Sensitivity)')
+plt.title('ROC for SVC')
+plt.legend(loc='lower right')
+plt.show()
+
+
+#%%
+with pd.ExcelWriter(r'Result_12hour_2001to2023v1.xlsx') as writer:
+    ACCU_RF.to_excel(writer, sheet_name="Ranodm Forest")
+    ACCU_NB.to_excel(writer, sheet_name="Naive Bayes")
+    ACCU_LGB.to_excel(writer, sheet_name="Lightgbm")
+    ACCU_Tree.to_excel(writer, sheet_name="Decision Tree")
+    ACCU_LR.to_excel(writer, sheet_name="Logestic Regression")
+    ACCU_Ada.to_excel(writer, sheet_name="AdaBosst")
+    ACCU_XGB.to_excel(writer, sheet_name="XGBoost")
+#    ACCU_meta.to_excel(writer, sheet_name="Meta")
+#    ACCU_H.to_excel(writer, sheet_name="Holdout")
+#    ACCU_svc.to_excel(writer, sheet_name="SVC")
+#    ACCU_ex.to_excel(writer, sheet_name="ExtraTrees")
+
+
+#%%# evaluate random forest algorithm for classification
+from numpy import mean
+from numpy import std
+from sklearn.datasets import make_classification
+from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import RepeatedStratifiedKFold
+from sklearn.ensemble import RandomForestClassifier
+# define dataset
+
+# define the model
+model = RandomForestClassifier()
+# evaluate the model
+cv = RepeatedStratifiedKFold(n_splits=10, n_repeats=3, random_state=1)
+n_scores = cross_val_score(model, X, y, scoring='accuracy', cv=cv, n_jobs=-1, error_score='raise')
+# report performance
+print('Accuracy: %.3f (%.3f)' % (mean(n_scores), std(n_scores)))
+
+#%%# evaluate random forest algorithm for classification ----- another method----cross-validation
+from numpy import arange
+# get a list of models to evaluate
+def get_models():
+	models = dict()
+	# explore ratios from 10% to 100% in 10% increments
+	for i in arange(0.1, 1.1, 0.1):
+		key = '%.1f' % i
+		# set max_samples=None to use 100%
+		if i == 1.0:
+			i = None
+		models[key] = RandomForestClassifier(max_samples=i)
+	return models
+
+# evaluate a given model using cross-validation
+def evaluate_model(model, X, y):
+	# define the evaluation procedure
+	cv = RepeatedStratifiedKFold(n_splits=10, n_repeats=3, random_state=1)
+	# evaluate the model and collect the results
+	scores = cross_val_score(model, X, y, scoring='accuracy', cv=cv, n_jobs=-1)
+	return scores
+
+
+# get the models to evaluate
+models = get_models()
+# evaluate the models and store results
+results, names = list(), list()
+for name, model in models.items():
+	# evaluate the model
+	scores = evaluate_model(model, X, y)
+	# store the results
+	results.append(scores)
+	names.append(name)
+	# summarize the performance along the way
+	print('>%s %.3f (%.3f)' % (name, mean(scores), std(scores)))
+# plot model performance for comparison
+from matplotlib import pyplot
+pyplot.boxplot(results, labels=names, showmeans=True)
+pyplot.show()
+#%% #%% Grid Search       take long time wothout output  15 hour
+from sklearn.model_selection import GridSearchCV
+from sklearn.ensemble import RandomForestClassifier
+
+param_grid = {
+    'n_estimators': [25, 50, 100, 150],
+    'max_features': ['sqrt', 'log2', None],
+    'max_depth': [ 6, 9,12],
+    'max_leaf_nodes': [ 6, 9,15]
+}
+
+grid_search = GridSearchCV(RandomForestClassifier(), param_grid=param_grid, cv=5)
+grid_search.fit(X_val, y_val)
+
+print(grid_search.best_params_)
+print(grid_search.best_estimator_)
+
+best_model = RandomForestClassifier(
+    n_estimators=grid_search.best_params_['n_estimators'],
+    max_features=grid_search.best_params_['max_features'],
+    max_depth=grid_search.best_params_['max_depth'],
+    max_leaf_nodes=grid_search.best_params_['max_leaf_nodes']
+)
+best_model.fit(X_train, y_train)
+
+
+#%%
+#----------------------- search the best parameter for Random Foreste algorithm --------------------------
+#from scipy.stats import randint
+param_dist = {'max_depth': [2,3,5,10,20],
+    'min_samples_leaf': [5,10,20,50,100,200],
+    'n_estimators': [10,25,30,50,100,200]}
+
+# Create a random forest classifier
+rf = RandomForestClassifier()
+
+# Use random search to find the best hyperparameters
+rand_search = RandomizedSearchCV(rf, param_distributions = param_dist, n_iter=5, cv=10 )
+
+# Fit the random search object to the data
+rand_search.fit(X_train, y_train)
+
+
+# Create a variable for the best model
+best_rf = rand_search.best_estimator_
+
+# Print the best hyperparameters
+print('Best hyperparameters:',  rand_search.best_params_)
+# Create a series containing feature importances from the model and feature names from the training data
+feature_importances = pd.Series(best_rf.feature_importances_, index=X_train.columns).sort_values(ascending=False)
+
+# Plot a simple bar chart
+feature_importances.plot.bar()
+
+y_pred_best=best_rf.predict(X_test)
+
+ac_train_best=accuracy_score(y_train, best_rf.predict(X_train))
+ac_test_best=accuracy_score(y_test, y_pred_best )
+ACCU_BEST=pd.DataFrame(classification_report(y_test, y_pred_best,output_dict=True)).transpose()
+
+cmb = confusion_matrix(y_test, y_pred_best)
+
+ConfusionMatrixDisplay(confusion_matrix=cmb).plot()
+
+
+
+   
