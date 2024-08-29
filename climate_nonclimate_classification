@@ -1,0 +1,863 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Dec 14 11:29:43 2023
+
+@author: khosole
+"""
+
+import numpy as np
+import pandas as pd
+from datetime import date
+from datetime import time
+import datetime
+import seaborn as sns
+import matplotlib.pyplot as plt
+from imblearn.over_sampling import RandomOverSampler
+from sklearn.model_selection import RandomizedSearchCV,train_test_split
+from sklearn.datasets import make_classification
+from sklearn.metrics import roc_curve, auc
+from sklearn.metrics import accuracy_score, classification_report,confusion_matrix,ConfusionMatrixDisplay
+from sklearn.metrics import accuracy_score
+import time
+
+#%%
+#    Read ofelia for add needed columns on data frame
+ofelia = pd.read_csv('C:/Users/khosole/OneDrive - ltu.se/Khosro works/Main dataframes/ofelio_vaxel_2000_2023_edit_felrapport.csv', index_col=0)
+#ofelia2010=ofelia[ofelia['Anmält datum']>'2009-12-31']
+
+ofelia2010=ofelia[ofelia['Objnr']!='not found']
+select_ofel=ofelia2010[['Objnr','Bantyp (G)']]
+sf=select_ofel.drop_duplicates('Objnr')
+#select_ofel=select_ofel.reset_index()
+#select_ofel['Objnr']=select_ofel['Objnr'].astype(str)
+
+# Read Bisdata for add vaxel type to data frame
+bisdata=pd.read_csv(r'bisdata_vxl.csv', index_col=0)
+dfb=bisdata[['objnr','Inläggningsår Växel' , 'Växeltyp']]
+dfb=dfb.rename(columns={'objnr':'Objnr'})
+
+# read initial data frame with weather parameter
+df=pd.read_csv(r'dataframe_72houre_p1.csv', index_col=0)
+
+df2010=df[df['Anmält datum']<'2023-01-01']  # select data till 2023
+df2023=df[(df['Anmält datum']>'2023-01-01') & (df['Anmält datum']<'2023-06-31') ] # select this part for validation
+
+ 
+merged_df = pd.merge(df2010, dfb, on='Objnr', how='left') # add vaxle type to data frame
+merged_df['Objnr']=merged_df['Objnr'].astype(str)
+
+df1=merged_df.copy()
+df1['klimat_id2'].replace('Snow and ice ' , 'Snow and ice',inplace=True)
+df1=df1.reset_index()
+dfc=pd.merge(df1, sf, on='Objnr', how='left',)  # add Bantyp (G) feature to data fram
+dfc=dfc.reset_index()
+
+
+#------   change categorical bantyp to numerical
+dfc['Objnr'] = dfc['Objnr'].astype("category")
+dfc['Bantyp (G)'].replace('-',0, inplace=True)
+dfc['Växeltyp'].replace(['3V', 'DKV', 'EKV', 'EV', 'EVR'],  [0, 1, 2, 3, 4], inplace=True)
+
+#------   change categorical region to numerical
+zone=[ 'Mitt', 'Nord','Syd', 'Väst',  'Öst']
+mask=dfc['Underhålls-område'].isin(zone)
+dfc=dfc[mask ]
+
+dfc['Underhålls-område'].replace([ 'Mitt', 'Nord','Syd', 'Väst',  'Öst'],  [0, 1, 2, 3, 4], inplace=True)
+#%% Snow and Rain calculation
+for m in ['sum','max','mean']:
+    dfc['Snow before '+m] = dfc.apply(lambda row: row['Precipitation before '+m] if row['Temperature before mean'] < 0 else 0, axis=1)
+    dfc['Rain before '+m]= dfc.apply(lambda row: row['Precipitation before '+m] if row['Temperature before mean'] > 0 else 0, axis=1)
+
+for m in ['sum','max','mean']:
+    dfc['Snow after '+m] = dfc.apply(lambda row: row['Precipitation after '+m] if row['Temperature after mean'] < 0  else 0, axis=1)
+    dfc['Rain after '+m]= dfc.apply(lambda row: row['Precipitation after '+m] if row['Temperature after mean'] > 0  else 0, axis=1)
+#%%                    calculating the age of each asset
+dfc['Inläggningsår Växel'] = pd.to_datetime(dfc['Inläggningsår Växel'].values,format='%Y-%m-%d',errors='raise')
+
+def age(born): 
+    today = date.today() 
+    return today.year - born.year
+
+dfc['age']=dfc['Inläggningsår Växel'].apply(age)
+dfc['Age']=dfc.apply(lambda row: 64 if row['age'] >64 else row['age'] , axis=1)
+
+
+#%%
+
+# Feature Engineering: Creating new insightful features.
+# Temperature Change
+dfc['Temperature Change'] = dfc['Temperature before max'] - dfc['Temperature before min']
+
+
+#%%
+
+dfc1=dfc.rename(columns={'Bantyp (G)':'Railway class' , 'Växeltyp': 'Asset type' , 'Underhålls-område': 'Region' ,  'repair': 'Repair' 
+                         ,'Temperature before min':'Temperature min' ,'WindSpeed before max':'WindSpeed max','Humidity before max':'Humidity max' 
+                         ,'Snow before sum' : 'Snow sum','Rain before sum':'Rain sum'})
+#  needed Parameter
+Weather_Par=['Temperature min','WindSpeed max','Humidity max' ,'Snow sum','Rain sum', 'Temperature Change' ] 
+ # 'Temperature after min', 'Snow after sum','Rain after sum','Humidity after max','WindSpeed after max',
+
+#Dum_par=['3V', 'DKV', 'EKV', 'EV', 'EVR','Bantyp (G)']  #, '-', 'Aban', 'Ibab', 'Mitt', 'Nord','Syd', 'Väst', 'Ösb', 'Öst', 'Övr'
+#Dum_par=[ '3V','DKV',  'EV', 'EVR'] 'Ban_0', 'Ban_1', 'Ban_2', 'Ban_3', 'Ban_4', 'Ban_5', 'Ban_6', 'Ban_7', 'Ban_8', 'Ban_98'   
+
+
+Dum_par=['Asset type','Railway class','Region', 'month', 'distance(km)','Repair'	]
+oth=['Objnr','Age','climate Code']
+
+#data=data1[oth+Weather_Par+Dum_par ]
+data=dfc1[oth+Weather_Par+Dum_par ]
+data=data.dropna() # drope nan data subset=Weather_Par
+
+data['Railway class'] = data['Railway class'].astype("int64")
+data['Railway class'] = pd.to_numeric(data['Railway class'], errors='coerce')
+
+data['Asset type'] = data['Asset type'].astype("int64")
+data['Asset type'] = pd.to_numeric(data['Asset type'], errors='coerce')
+
+
+St=['climate Code']
+ag=['Age']
+
+sns.set(font_scale=1)
+data_cor=data[Weather_Par+Dum_par+ag+St]
+correlation_matrix=data_cor.corr()  # corolation matrix
+plt.figure(figsize=(16,14))
+sns.heatmap(correlation_matrix, annot=True, cmap="coolwarm", fmt=".2f", linewidths=.2, annot_kws={"rotation": 45})
+plt.title("Correlation Matrix")
+
+plt.figure(figsize=(16, 6))
+# define the mask to set the values in the upper triangle to True
+mask = np.triu(np.ones_like(data_cor.corr()))
+heatmap = sns.heatmap(data_cor.corr(), mask=mask, vmin=-1, vmax=1, annot=True, cmap='coolwarm')
+heatmap.set_title('Triangle Correlation Heatmap', fontdict={'fontsize':15}, pad=16)
+#plt.xticks(rotation=45) 
+
+#Feature collorating
+plt.figure(figsize=(8, 12))
+heatmap = sns.heatmap(data_cor.corr()[['climate Code']].sort_values(by='climate Code', ascending=False), vmin=-1, vmax=1, annot=True, cmap='BrBG')
+heatmap.set_title('Features Correlating ', fontdict={'fontsize':16}, pad=16)
+
+
+
+target ='climate Code'
+features =Weather_Par+ag+Dum_par
+#features =ag+Weather_Par
+X =data[features]
+y = data[target]
+# Split the dataset into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+
+#%% # Calculate class weights
+from sklearn.utils.class_weight import compute_class_weight, compute_sample_weight
+
+classes = np.unique(y_train)
+#cl=np.array([3,0.5])
+class_weights = compute_class_weight(class_weight='balanced', classes=classes, y=y_train)
+sample_weights = compute_sample_weight(class_weight=dict(zip(classes, class_weights )), y=y_train) # calculate wieght of sample
+# Create a dictionary of class weights
+class_weight_dict = dict(zip(np.unique(y_train), class_weights))
+#weights = compute_sample_weight(y_train)
+
+#%%             Random Forest
+from sklearn.ensemble import RandomForestClassifier
+#from sklearn.model_selection import cross_val_score, KFold
+from sklearn.preprocessing import StandardScaler
+import shap
+# Feature Scaling
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+rf_model = RandomForestClassifier(  max_depth=20, n_estimators=100,min_samples_leaf=10,  random_state=42,n_jobs=-1) #,class_weight=class_weight_dict  n_jobs=-1, random_state=42
+start_time = time.time()
+rf_model.fit(X_train_scaled, y_train, sample_weight=sample_weights)# sample weight
+end_time = time.time()
+elapsed_time = end_time - start_time
+print("Training time:", elapsed_time)
+y_pred_rf=rf_model.predict(X_test_scaled)
+
+ACCU_RF=pd.DataFrame(classification_report(y_test, y_pred_rf,output_dict=True)).transpose()
+
+#----------------- confusion_matrix
+cm_rf = confusion_matrix(y_test, y_pred_rf)
+plt.figure(figsize=(8, 6))
+#sns.set(font_scale=4)
+h=sns.heatmap(cm_rf, annot=True, fmt="d", cmap="Blues", cbar=False, annot_kws={"fontsize": 48} )
+plt.title(" Random Forest ", fontsize=35)
+h.set_xticklabels(['NC', 'C'],fontsize=35)
+h.set_yticklabels(['NC', 'C'],fontsize=35)
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+sns.set(font_scale=1)
+#--------------feature_importances
+# Create a series containing feature importances from the model and feature names from the training data
+feature_importances = pd.Series(rf_model.feature_importances_, index=X_train.columns).sort_values(ascending=False)
+# Plot a simple bar chart
+plt.figure(figsize=(8, 6))
+feature_importances.plot.bar( )
+plt.title(" Random Forest ")
+
+#---------------ROC
+fpr, tpr, thresholds = roc_curve(y_test, y_pred_rf)
+roc_auc = auc(fpr, tpr)
+# Plotting the ROC curve
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate (1 - Specificity)')
+plt.ylabel('True Positive Rate (Sensitivity)')
+plt.title('ROC for Random Forest')
+plt.legend(loc='lower right')
+plt.show()
+
+
+
+#%%  validation for data in 2023.  first train model with data form 2000 till 2022 and then use data 2023 for test sample
+df_val=pd.read_csv(r'C:\Users\khosole\OneDrive - ltu.se\Khosro works\Data for Machin Learning\New database\dataframe_Klimate_2023_2024_validation.csv' )
+df_val=df_val[df_val['Anmält datum']<'2024-01-01']
+
+dfv1 = pd.merge(df_val, dfb, on='Objnr', how='left') # add vaxle type to data frame
+dfv1['klimat_id'].replace([	'is not identified'],  ['no climate reason'], inplace=True)
+#----------------------------------------------------------------------------
+df23 = pd.merge(df2023, dfb, on='Objnr', how='left') # add vaxle type to data frame
+df23=df23.rename(columns={'klimat_id2': 'klimat_id' })
+df23['Objnr']=df23['Objnr'].astype(str)
+dfc23=pd.merge(df23, sf, on='Objnr', how='left',)  # add Bantyp (G) feature to data fram
+dfc23=dfc23.reset_index()
+
+#--------------------------------------- merge two data frame ( date of dfv1 is from 2023-06 till 2023-12  and date of dfc23 is from 2021-01 till 2023-06)
+dfvc=pd.concat([dfv1,dfc23],ignore_index=True)
+
+dfvc['Bantyp (G)'].replace('-',0, inplace=True)
+dfvc['Bantyp (G)'] = dfvc['Bantyp (G)'].astype("int64")
+dfvc['Bantyp (G)'] = pd.to_numeric(dfvc['Bantyp (G)'], errors='coerce')
+
+dfvc['Växeltyp'].replace(['3V', 'DKV', 'EKV', 'EV', 'EVR'],  [0, 1, 2, 3, 4], inplace=True)
+dfvc['klimat_id'].replace('Snow and ice ' , 'Snow and ice',inplace=True)
+dfvc=dfvc.reset_index()
+
+zone=[ 'Mitt', 'Nord','Syd', 'Väst',  'Öst']
+mask=dfvc['Underhålls-område'].isin(zone)
+dfvc=dfvc[mask ]
+dfvc['Underhålls-område'].replace([ 'Mitt', 'Nord','Syd', 'Väst',  'Öst'],  [0, 1, 2, 3, 4], inplace=True)
+
+#------------------------------------------------------calculate snow and rain
+for m in ['sum','max','mean']:
+    dfvc['Snow before '+m] = dfvc.apply(lambda row: row['Precipitation before '+m] if row['Temperature before mean'] < 0 else 0, axis=1)
+    dfvc['Rain before '+m]= dfvc.apply(lambda row: row['Precipitation before '+m] if row['Temperature before mean'] > 0 else 0, axis=1)
+
+for m in ['sum','max','mean']:
+    dfvc['Snow after '+m] = dfvc.apply(lambda row: row['Precipitation after '+m] if row['Temperature after mean'] < 0  else 0, axis=1)
+    dfvc['Rain after '+m]= dfvc.apply(lambda row: row['Precipitation after '+m] if row['Temperature after mean'] > 0  else 0, axis=1)
+
+#------------------------------------------------------ calculate age of each asset
+dfvc['Inläggningsår Växel'] = pd.to_datetime(dfvc['Inläggningsår Växel'].values,format='%Y-%m-%d',errors='raise')
+
+def age(born): 
+    today = date.today() 
+    return today.year - born.year
+
+dfvc['age']=dfvc['Inläggningsår Växel'].apply(age)
+dfvc['Age']=dfvc.apply(lambda row: 64 if row['age'] >64 else row['age'] , axis=1)
+#------------------------------------------------
+
+# Temperature Change
+dfvc['Temperature Change'] = dfvc['Temperature before max'] - dfvc['Temperature before min']
+
+dfvc=dfvc.rename(columns={'Bantyp (G)':'Railway class' , 'Växeltyp': 'Asset type' , 'Underhålls-område': 'Region' ,  'repair': 'Repair' 
+                          ,'Temperature before min':'Temperature min' ,'WindSpeed before max':'WindSpeed max','Humidity before max':'Humidity max' 
+                          ,'Snow before sum' : 'Snow sum','Rain before sum':'Rain sum'})
+ftt=features+[target]
+dfvc=dfvc[ftt]
+dfvc=dfvc.dropna() #subset=Weather_Par
+X_val =dfvc[features]
+y_val= dfvc[target]
+
+X_val_scaled = scaler.transform(X_val)
+X_scaled = scaler.transform(X)
+
+classv = np.unique(y)
+class_weightsv = compute_class_weight(class_weight='balanced', classes=classv, y=y)
+sample_weightsv = compute_sample_weight(class_weight=dict(zip(classv, class_weightsv )), y=y) # calculate wieght of sample
+# Create a dictionary of class weights
+class_weight_dictv = dict(zip(np.unique(y), class_weightsv))
+
+rfv_model = RandomForestClassifier(  max_depth=20, n_estimators=100,min_samples_leaf=10,  random_state=42,n_jobs=-1) #,class_weight=class_weight_dict  n_jobs=-1, random_state=42
+start_time = time.time()
+rfv_model.fit(X_scaled, y ,sample_weight=sample_weightsv)# sample weight    
+end_time = time.time()
+elapsed_time = end_time - start_time
+print("Training time:", elapsed_time)
+
+
+y_pred_val=rfv_model.predict(X_val_scaled)
+predictions = rfv_model.predict_proba(X_val_scaled)  #probabilities of labels/classes
+
+ACCU_RF_val=pd.DataFrame(classification_report(y_val, y_pred_val,output_dict=True)).transpose()
+
+cm_rf = confusion_matrix(y_val, y_pred_val)
+plt.figure(figsize=(8, 6))
+h=sns.heatmap(cm_rf, annot=True, fmt="d", cmap="Blues", cbar=False, annot_kws={"fontsize": 48})
+plt.title(" Random Forest ",fontsize=35)
+h.set_xticklabels(['NC', 'C'],fontsize=35)
+h.set_yticklabels(['NC', 'C'],fontsize=35)
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+
+#%%  SHAP 
+explainer = shap.Explainer(rf_model, X)
+shap_values = explainer(X)
+class_to_show = 1
+shap.plots.beeswarm(shap_values[:,:,class_to_show] ,max_display=18, order=shap.Explanation.abs.mean(0))   # 
+
+
+class_to_show = 1
+shap.plots.beeswarm(shap_values[:,0:6,class_to_show])
+
+shap.plots.beeswarm(shap_values[:,6:,class_to_show])
+
+shap_val = explainer.shap_values(X_test)
+shap.summary_plot(shap_val, X_test)
+shap_val1 = explainer(X_test)
+shap.plots.beeswarm(shap_val1[:,:,class_to_show] , max_display=20, order=shap.Explanation.abs.mean(0))
+shap.plots.beeswarm(shap_val1[:,10:,class_to_show])
+
+
+#%% Naive Bayes
+from sklearn.naive_bayes import GaussianNB
+custom_priors = [0.8, 0.2]
+model_NB = GaussianNB(priors=custom_priors )
+start_time = time.time()
+model_NB.fit(X_train, y_train ,sample_weight=sample_weights  )  # 
+end_time = time.time()
+elapsed_time = end_time - start_time
+print("Training time:", elapsed_time)
+y_pred_nb=model_NB.predict(X_test)
+
+ACCU_NB=pd.DataFrame(classification_report(y_test, y_pred_nb,output_dict=True)).transpose()
+
+cm_nb = confusion_matrix(y_test, y_pred_nb)
+#ConfusionMatrixDisplay(confusion_matrix=cm_nb).plot()
+plt.figure(figsize=(8, 6))
+h=sns.heatmap(cm_nb, annot=True, fmt="d", cmap="Blues", cbar=False, annot_kws={"fontsize": 48} )
+plt.title("Naive Bayesn", fontsize=35)
+h.set_xticklabels(['NC', 'C'],fontsize=35)
+h.set_yticklabels(['NC', 'C'],fontsize=35)
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+
+
+fpr, tpr, thresholds = roc_curve(y_test, y_pred_nb)
+roc_auc = auc(fpr, tpr)
+
+# Plotting the ROC curve
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate (1 - Specificity)')
+plt.ylabel('True Positive Rate (Sensitivity)')
+plt.title('ROC for Naive Bayses')
+plt.legend(loc='lower right')
+plt.show()
+
+from sklearn.metrics import roc_auc_score
+
+# Assuming y_true and y_scores are your true labels and predicted scores
+auc_score = roc_auc_score(y_test, y_pred_nb)
+print(f"AUC Score: {auc_score:.4f}")
+
+#%%           Logistic Regression
+from sklearn.linear_model import LogisticRegression
+
+model_LR = LogisticRegression(solver='lbfgs', max_iter=1000)
+start_time = time.time()
+model_LR.fit(X_train, y_train, sample_weight=sample_weights) #
+end_time = time.time()
+elapsed_time = end_time - start_time
+print("Training time:", elapsed_time)
+y_pred_lr=model_LR.predict(X_test)
+
+ACCU_LR=pd.DataFrame(classification_report(y_test, y_pred_lr,output_dict=True)).transpose()
+
+cm_lr = confusion_matrix(y_test, y_pred_lr)
+#ConfusionMatrixDisplay(confusion_matrix=cm_lr).plot()
+
+plt.figure(figsize=(8, 6))
+h=sns.heatmap(cm_lr, annot=True, fmt="d", cmap="Blues", cbar=False, annot_kws={"fontsize": 48})
+h.set_xticklabels(['NC', 'C'],fontsize=35)
+h.set_yticklabels(['NC', 'C'],fontsize=35)
+plt.title("Logistic Regression",fontsize=35)
+
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+
+fpr, tpr, thresholds = roc_curve(y_test, y_pred_lr)
+roc_auc = auc(fpr, tpr)
+
+# Plotting the ROC curve
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate (1 - Specificity)')
+plt.ylabel('True Positive Rate (Sensitivity)')
+plt.title('ROC for Logistic Regression')
+plt.legend(loc='lower right')
+plt.show()
+
+#%%                 Decision Trees 
+from sklearn.tree import DecisionTreeClassifier
+tree_model = DecisionTreeClassifier()
+tree_model.fit(X_train, y_train, sample_weight=sample_weights)
+y_pred_tree=tree_model.predict(X_test)
+
+ACCU_Tree=pd.DataFrame(classification_report(y_test, y_pred_tree,output_dict=True)).transpose()
+
+cm_tree = confusion_matrix(y_test, y_pred_tree)
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm_tree, annot=True, fmt="d", cmap="Blues", cbar=False)
+plt.title("Decision Trees ")
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+
+# Create a series containing feature importances from the model and feature names from the training data
+feature_importances = pd.Series(tree_model.feature_importances_, index=X_train.columns).sort_values(ascending=False)
+# Plot a simple bar chart
+plt.figure(figsize=(8, 6))
+feature_importances.plot.bar( )
+plt.title("Decision Trees ")
+
+fpr, tpr, thresholds = roc_curve(y_test, y_pred_tree)
+roc_auc = auc(fpr, tpr)
+
+# Plotting the ROC curve
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate (1 - Specificity)')
+plt.ylabel('True Positive Rate (Sensitivity)')
+plt.title('ROC for Decision Tree')
+plt.legend(loc='lower right')
+plt.show()
+
+#%% lightgbm
+import lightgbm as lgb
+clf = lgb.LGBMClassifier(learning_rate=0.1,max_depth=8, max_bin=12,num_leaves=100,force_row_wise=True,seed = 42)  #,random_state=42
+
+start_time = time.time()
+clf.fit(X_train, y_train, eval_set=[(X_test,y_test),(X_train,y_train)], eval_metric='logloss' ,sample_weight=sample_weights)  #
+end_time = time.time()
+elapsed_time = end_time - start_time
+print("Training time:", elapsed_time)
+y_pred_lgb=clf.predict(X_test)
+
+ACCU_LGB=pd.DataFrame(classification_report(y_test, y_pred_lgb,output_dict=True)).transpose()
+
+#lgb.plot_importance(clf)
+#lgb.plot_metric(clf)
+
+cm_lgb = confusion_matrix(y_test, y_pred_lgb)
+plt.figure(figsize=(8, 6))
+h=sns.heatmap(cm_lgb, annot=True, fmt="d", cmap="Blues", cbar=False, annot_kws={"fontsize": 48})
+h.set_xticklabels(['NC', 'C'],fontsize=35)
+h.set_yticklabels(['NC', 'C'],fontsize=35)
+plt.title(" Lightgbm ",fontsize=35)
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+
+# Create a series containing feature importances from the model and feature names from the training data
+feature_importances = pd.Series(clf.feature_importances_, index=X_train.columns).sort_values(ascending=False)
+# Plot a simple bar chart
+plt.figure(figsize=(8, 6))
+feature_importances.plot.bar( )
+plt.title(" Lightgbm  ")
+
+fpr, tpr, thresholds = roc_curve(y_test, y_pred_lgb)
+roc_auc = auc(fpr, tpr)
+
+# Plotting the ROC curve
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate (1 - Specificity)')
+plt.ylabel('True Positive Rate (Sensitivity)')
+plt.title('ROC for LightGBM')
+plt.legend(loc='lower right')
+plt.show()
+
+
+#%%                 XGBoost
+import xgboost as xgb
+# Create XGBoost classifier
+xgb_model = xgb.XGBClassifier(learning_rate=0.1,
+    n_estimators=500,
+    max_depth=5,
+    subsample=0.9,
+    colsample_bytree=0.8,
+    gamma=0,
+    min_child_weight=1,
+    reg_lambda=1,
+    reg_alpha=0,
+      objective='binary:logistic',
+    eval_metric='logloss'  )
+#objective="multi:softmax", num_class=3, seed=42
+# Train the model
+start_time = time.time()
+xgb_model.fit(X_train, y_train, sample_weight=sample_weights) #
+end_time = time.time()
+elapsed_time = end_time - start_time
+print("Training time:", elapsed_time)
+y_pred_xgb=xgb_model.predict(X_test)
+
+ACCU_XGB=pd.DataFrame(classification_report(y_test, y_pred_xgb,output_dict=True)).transpose()
+
+cm_xgb = confusion_matrix(y_test, y_pred_xgb)
+plt.figure(figsize=(8, 6))
+h=sns.heatmap(cm_xgb, annot=True, fmt="d", cmap="Blues", cbar=False, annot_kws={"fontsize": 48})
+h.set_xticklabels(['NC', 'C'],fontsize=35)
+h.set_yticklabels(['NC', 'C'],fontsize=35)
+plt.title(" XGB " ,fontsize=35)
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+
+fpr, tpr, thresholds = roc_curve(y_test, y_pred_xgb)
+roc_auc = auc(fpr, tpr)
+
+# Plotting the ROC curve
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate (1 - Specificity)')
+plt.ylabel('True Positive Rate (Sensitivity)')
+plt.title('ROC for XGBoost')
+plt.legend(loc='lower right')
+plt.show()
+
+
+#%%    AdaBoost
+from sklearn.ensemble import AdaBoostClassifier
+from sklearn.tree import DecisionTreeClassifier
+
+# Specify the base learner (a decision tree in this case)
+base_classifier = DecisionTreeClassifier(max_depth=3)
+
+# Create the AdaBoost classifier
+adaboost_classifier = AdaBoostClassifier(base_classifier, n_estimators=150 ,learning_rate=0.1, random_state=42)
+
+start_time = time.time()
+
+adaboost_classifier.fit(X_train, y_train , sample_weight=sample_weights)
+
+end_time = time.time()
+elapsed_time = end_time - start_time
+print("Training time:", elapsed_time)
+
+
+# Predictions
+y_pred_ad = adaboost_classifier.predict(X_test)
+
+ACCU_Ada=pd.DataFrame(classification_report(y_test, y_pred_ad,output_dict=True)).transpose()
+
+#feature_importances =adaboost_classifier.feature_importances_
+feature_importances = pd.Series(adaboost_classifier.feature_importances_, index=X_train.columns).sort_values(ascending=False)
+# Plot a simple bar chart
+plt.figure(figsize=(8, 6))
+feature_importances.plot.bar( )
+plt.title(" Adaboost ")
+
+
+cm_Ada = confusion_matrix(y_test, y_pred_ad)
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm_Ada, annot=True, fmt="d", cmap="Blues", cbar=False)
+plt.title(" AdaBoost ")
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+
+fpr, tpr, thresholds = roc_curve(y_test, y_pred_ad)
+roc_auc = auc(fpr, tpr)
+
+# Plotting the ROC curve
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate (1 - Specificity)')
+plt.ylabel('True Positive Rate (Sensitivity)')
+plt.title('ROC for AdaBoost')
+plt.legend(loc='lower right')
+plt.show()
+
+
+#%%  SVM
+from sklearn.svm import SVC
+svm_classifier = SVC(kernel='rbf', C=1, gamma='scale', random_state=42)
+
+# Train the classifier on the training data
+svm_classifier.fit(X_train, y_train,sample_weight=sample_weights)
+
+# Make predictions on the test data
+y_pred_svc = svm_classifier.predict(X_test)
+
+# Evaluate the performance of the classifier
+accuracy = accuracy_score(y_test, y_pred_svc)
+print(f"Accuracy: {accuracy:.2f}")
+
+# Display classification report
+print("Classification Report:")
+print(classification_report(y_test, y_pred_svc))
+
+ACCU_svc=pd.DataFrame(classification_report(y_test,y_pred_svc,output_dict=True)).transpose()
+
+
+
+cm_svc = confusion_matrix(y_test, y_pred_svc)
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm_svc, annot=True, fmt="d", cmap="Blues", cbar=False)
+plt.title(" SVC ")
+#plt.xlabel("Predicted Labels")
+#plt.ylabel("True Labels")
+
+fpr, tpr, thresholds = roc_curve(y_test, y_pred_svc)
+roc_auc = auc(fpr, tpr)
+
+# Plotting the ROC curve
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate (1 - Specificity)')
+plt.ylabel('True Positive Rate (Sensitivity)')
+plt.title('ROC for SVC')
+plt.legend(loc='lower right')
+plt.show()
+
+
+#%%
+with pd.ExcelWriter(r'C:\Users\khosole\OneDrive - ltu.se\Khosro works\Machine learning folder\Accuracy\finall\Result_72hour_2001to2023v1.xlsx') as writer:
+    ACCU_RF.to_excel(writer, sheet_name="Ranodm Forest")
+    ACCU_NB.to_excel(writer, sheet_name="Naive Bayes")
+    ACCU_LGB.to_excel(writer, sheet_name="Lightgbm")
+    ACCU_Tree.to_excel(writer, sheet_name="Decision Tree")
+    ACCU_LR.to_excel(writer, sheet_name="Logestic Regression")
+    ACCU_Ada.to_excel(writer, sheet_name="AdaBosst")
+    ACCU_XGB.to_excel(writer, sheet_name="XGBoost")
+#    ACCU_meta.to_excel(writer, sheet_name="Meta")
+#    ACCU_H.to_excel(writer, sheet_name="Holdout")
+#    ACCU_svc.to_excel(writer, sheet_name="SVC")
+#    ACCU_ex.to_excel(writer, sheet_name="ExtraTrees")
+
+#%%  Meta model
+
+
+from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+
+# Generate synthetic data
+# Assume X_train, y_train, X_val, y_val are your training and validation data
+
+# Step 1: Train Base Models
+base_model1 = RandomForestClassifier(  max_depth=20, n_estimators=100,min_samples_leaf=10,  random_state=42,n_jobs=-1)
+base_model2 = xgb.XGBClassifier(learning_rate=0.1,
+    n_estimators=500,
+    max_depth=5,
+    subsample=0.9,
+    colsample_bytree=0.8,
+    gamma=0,
+    min_child_weight=1,
+    reg_lambda=1,
+    reg_alpha=0,
+      objective='binary:logistic',
+    eval_metric='logloss'  )
+
+base_model1.fit(X_train, y_train, sample_weight=sample_weights)#, sample_weight=sample_weights
+base_model2.fit(X_train, y_train, sample_weight=sample_weights)#, sample_weight=sample_weights
+
+# Step 2: Generate Predictions
+pred_base_model1 = base_model1.predict(X_test)
+pred_base_model2 = base_model2.predict(X_test)
+
+# Stack predictions horizontally to create a new feature matrix
+X_stacked = np.column_stack((pred_base_model1, pred_base_model2))
+
+# Step 3: Train Meta-Model
+meta_model = AdaBoostClassifier(base_classifier, n_estimators=150 ,learning_rate=0.1, random_state=42)
+meta_model.fit(X_stacked, y_test)
+# Step 4: Make Final Prediction
+# Generate predictions from base models for the test set
+pred_base_model1_test = base_model1.predict(X_test)
+pred_base_model2_test = base_model2.predict(X_test)
+
+# Stack predictions for the test set
+X_stacked_test = np.column_stack((pred_base_model1_test, pred_base_model2_test))
+
+# Make final predictions using the meta-model
+final_predictions = meta_model.predict(X_stacked_test)
+
+# Evaluate the final model
+accuracy = accuracy_score(y_test, final_predictions)
+print(f"Final Model Accuracy: {accuracy:.4f}")
+ACCU_meta=pd.DataFrame(classification_report(y_test,final_predictions,output_dict=True)).transpose()
+
+cm_m = confusion_matrix(y_test, final_predictions)
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm_m, annot=True, fmt="d", cmap="Reds", cbar=False)
+plt.title(" Meta ")
+plt.xlabel("Predicted Labels")
+plt.ylabel("True Labels")
+
+fpr, tpr, thresholds = roc_curve(y_test,final_predictions)
+roc_auc = auc(fpr, tpr)
+
+# Plotting the ROC curve
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate (1 - Specificity)')
+plt.ylabel('True Positive Rate (Sensitivity)')
+plt.title('ROC for Meta')
+plt.legend(loc='lower right')
+plt.show()
+
+#%%# evaluate random forest algorithm for classification
+from numpy import mean
+from numpy import std
+from sklearn.datasets import make_classification
+from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import RepeatedStratifiedKFold
+from sklearn.ensemble import RandomForestClassifier
+# define dataset
+
+# define the model
+model = RandomForestClassifier()
+# evaluate the model
+cv = RepeatedStratifiedKFold(n_splits=10, n_repeats=3, random_state=1)
+n_scores = cross_val_score(model, X, y, scoring='accuracy', cv=cv, n_jobs=-1, error_score='raise')
+# report performance
+print('Accuracy: %.3f (%.3f)' % (mean(n_scores), std(n_scores)))
+
+#%%# evaluate random forest algorithm for classification ----- another method----cross-validation
+from numpy import arange
+# get a list of models to evaluate
+def get_models():
+	models = dict()
+	# explore ratios from 10% to 100% in 10% increments
+	for i in arange(0.1, 1.1, 0.1):
+		key = '%.1f' % i
+		# set max_samples=None to use 100%
+		if i == 1.0:
+			i = None
+		models[key] = RandomForestClassifier(max_samples=i)
+	return models
+
+# evaluate a given model using cross-validation
+def evaluate_model(model, X, y):
+	# define the evaluation procedure
+	cv = RepeatedStratifiedKFold(n_splits=10, n_repeats=3, random_state=1)
+	# evaluate the model and collect the results
+	scores = cross_val_score(model, X, y, scoring='accuracy', cv=cv, n_jobs=-1)
+	return scores
+
+
+# get the models to evaluate
+models = get_models()
+# evaluate the models and store results
+results, names = list(), list()
+for name, model in models.items():
+	# evaluate the model
+	scores = evaluate_model(model, X, y)
+	# store the results
+	results.append(scores)
+	names.append(name)
+	# summarize the performance along the way
+	print('>%s %.3f (%.3f)' % (name, mean(scores), std(scores)))
+# plot model performance for comparison
+from matplotlib import pyplot
+pyplot.boxplot(results, labels=names, showmeans=True)
+pyplot.show()
+#%% #%% Grid Search       take long time wothout output  15 hour
+from sklearn.model_selection import GridSearchCV
+from sklearn.ensemble import RandomForestClassifier
+
+param_grid = {
+    'n_estimators': [25, 50, 100, 150],
+    'max_features': ['sqrt', 'log2', None],
+    'max_depth': [ 6, 9,12],
+    'max_leaf_nodes': [ 6, 9,15]
+}
+
+grid_search = GridSearchCV(RandomForestClassifier(), param_grid=param_grid, cv=5)
+grid_search.fit(X_val, y_val)
+
+print(grid_search.best_params_)
+print(grid_search.best_estimator_)
+
+best_model = RandomForestClassifier(
+    n_estimators=grid_search.best_params_['n_estimators'],
+    max_features=grid_search.best_params_['max_features'],
+    max_depth=grid_search.best_params_['max_depth'],
+    max_leaf_nodes=grid_search.best_params_['max_leaf_nodes']
+)
+best_model.fit(X_train, y_train)
+
+
+#%%
+#----------------------- search the best parameter for Random Foreste algorithm --------------------------
+#from scipy.stats import randint
+param_dist = {'max_depth': [2,3,5,10,20],
+    'min_samples_leaf': [5,10,20,50,100,200],
+    'n_estimators': [10,25,30,50,100,200]}
+
+# Create a random forest classifier
+rf = RandomForestClassifier()
+
+# Use random search to find the best hyperparameters
+rand_search = RandomizedSearchCV(rf, param_distributions = param_dist, n_iter=5, cv=10 )
+
+# Fit the random search object to the data
+rand_search.fit(X_train, y_train)
+
+
+# Create a variable for the best model
+best_rf = rand_search.best_estimator_
+
+# Print the best hyperparameters
+print('Best hyperparameters:',  rand_search.best_params_)
+# Create a series containing feature importances from the model and feature names from the training data
+feature_importances = pd.Series(best_rf.feature_importances_, index=X_train.columns).sort_values(ascending=False)
+
+# Plot a simple bar chart
+feature_importances.plot.bar()
+
+y_pred_best=best_rf.predict(X_test)
+
+ac_train_best=accuracy_score(y_train, best_rf.predict(X_train))
+ac_test_best=accuracy_score(y_test, y_pred_best )
+ACCU_BEST=pd.DataFrame(classification_report(y_test, y_pred_best,output_dict=True)).transpose()
+
+cmb = confusion_matrix(y_test, y_pred_best)
+
+ConfusionMatrixDisplay(confusion_matrix=cmb).plot()
+
+
+
+   
