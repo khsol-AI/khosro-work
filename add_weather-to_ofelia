@@ -1,0 +1,264 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Oct  5 16:49:10 2023
+
+@author: khosole
+"""
+# Before runing this code some other codes like smhi, climate,helper, and api endponts in Jouhan climate code  must be runed.
+# find the closest weather station to each asset and get weather data from it
+import pandas as pd
+import smhi
+import climate
+from smhi_open_data import SMHIOpenDataClient, Parameter
+from datetime import datetime,timedelta
+import numpy as np
+from scipy.spatial import KDTree
+from geopy.distance import geodesic
+import math
+
+####### define some functions
+#%%
+# function for computing distance
+def haversine_distance(coord1, coord2):
+    R = 6371  # Earth's radius in kilometers
+
+    lat1, lon1 = math.radians(coord1[0]), math.radians(coord1[1])
+    lat2, lon2 = math.radians(coord2[0]), math.radians(coord2[1])
+    
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+
+    a = math.sin(dlat / 2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    return R * c
+
+# function for finding closest location
+def find_closest_location(base_location, other_locations):
+    min_distance = float('inf')
+    closest_location = None
+
+    for location in other_locations:
+        distance = haversine_distance(base_location, location)
+        if distance < min_distance:
+            min_distance = distance
+            closest_location = location
+
+    return closest_location, min_distance
+
+
+#%% 
+
+# read locations of assets
+gps=pd.read_csv(asset_gps.csv')
+# read ofelio database
+data_frame = pd.read_csv('ofelio_vaxel_klimate_ML.csv')
+
+# select records with identified Object number
+ofelia=data_frame[data_frame['Objnr']!='not found']
+
+
+#%% collect stations with specific parameter
+# Get weather parameters
+parameters = smhi.list_parameters()
+# Find stations with certain parameter
+param_p = 'PrecipPast1h'
+param_idp = smhi.get_param_value(param_p)
+stations_prec = smhi.list_stations(param_idp)
+#collect stations 
+stations_filter_p=stations_prec[(stations_prec['active']==True)] # select active stations
+stations_filter_p.reset_index(drop=True , inplace=True)
+
+param_t = 'TemperaturePast1h'
+param_idt = smhi.get_param_value(param_t)
+stations_temp = smhi.list_stations(param_idt)
+#collect stations 
+stations_filter_t=stations_temp[(stations_temp['active']==True)] # select active stations
+stations_filter_t.reset_index(drop=True , inplace=True)
+
+stations_filter1=stations_filter_t.merge(stations_filter_p , on=['key'], how='inner', suffixes=('', '_y'))
+stations_filter1.drop(stations_filter1.filter(regex='_y$').columns, axis=1, inplace=True)
+clmn=['id', 'height', 'latitude','longitude']
+stations_filter=stations_filter1[clmn]
+#dropping weather stations with misshing data according to Date
+missing = pd.read_excel(r'C:\Users\khosole\OneDrive - ltu.se\Khosro works\SMHI files\weatherstation_missingdate.xlsx')
+missing.loc[10]=[98230] # this station has not values from 2000 to 2023
+ids_to_drop =missing['weather station id'].tolist()
+stations_filter = stations_filter[~stations_filter['id'].isin(ids_to_drop)]	
+stations_filter.reset_index(drop=True,inplace = True)
+#%% function for getting values of the weather parameters
+
+def get_weather_b(paramet, t_delta , meth):
+    
+    df=weathers[paramet]
+    parameter_befor = []
+    if meth =="max":
+        for x in df_objnr['Anmält datum']:
+            y_befor = df[(df['Date (UTC)'] <= x) & (df['Date (UTC)']> x - timedelta(days=0,hours= t_delta))]
+            parameter_t1 = y_befor['Value'].max()
+            parameter_befor.append(parameter_t1)
+    elif meth =="min":
+        for x in df_objnr['Anmält datum']:
+           y_befor = df[(df['Date (UTC)'] <= x) & (df['Date (UTC)'] > x - timedelta(days=0,hours=t_delta))]
+           parameter_t1 = y_befor['Value'].min()
+           parameter_befor.append(parameter_t1)
+    elif meth=="mean":
+        for x in df_objnr['Anmält datum']:
+           y_befor = df[(df['Date (UTC)'] <= x) & (df['Date (UTC)'] > x - timedelta(days=0,hours=t_delta))]
+           parameter_t1 = y_befor['Value'].mean()
+           parameter_befor.append(parameter_t1)
+    else:
+        for x in df_objnr['Anmält datum']:
+           y_befor = df[(df['Date (UTC)'] <= x) & (df['Date (UTC)'] > x - timedelta(days=0,hours=t_delta))]
+           parameter_t1 = y_befor['Value'].sum()
+           parameter_befor.append(parameter_t1)
+    return parameter_befor
+    
+       
+    
+def get_weather_a(paramet, time_delta , meth):
+    df=weathers[paramet]
+    parameter_after = []
+    if meth =="max":
+        for x in df_objnr['Anmält datum']:
+            y_after = df[(df['Date (UTC)'] > x) & (df['Date (UTC)'] <= x + timedelta(days=0,hours=time_delta))]
+            parameter_t1 = y_after['Value'].max()
+            parameter_after.append(parameter_t1)
+    elif meth =="min":
+        for x in df_objnr['Anmält datum']:
+           y_after = df[(df['Date (UTC)'] > x) & (df['Date (UTC)'] <= x + timedelta(days=0,hours=time_delta))]
+           parameter_t1 = y_after['Value'].min()
+           parameter_after.append(parameter_t1)
+    elif meth=="mean":
+        for x in df_objnr['Anmält datum']:
+            y_after = df[(df['Date (UTC)'] > x) & (df['Date (UTC)'] <= x + timedelta(days=0,hours=time_delta))]
+            parameter_t1 = y_after['Value'].mean()
+            parameter_after.append(parameter_t1)
+    else:
+        for x in df_objnr['Anmält datum']:
+           y_after = df[(df['Date (UTC)'] > x) & (df['Date (UTC)'] <= x + timedelta(days=0,hours=time_delta))]
+           parameter_t1 = y_after['Value'].sum()
+           parameter_after.append(parameter_t1)
+    return parameter_after
+
+
+#%% find closest weather station
+#close_station_test=find_closest_station(stations_filter,  64.5903,18.7575, 30)
+
+ts1=('2000-12-31', '2023-6-30')
+ofelia['Objnr']=ofelia['Objnr'].astype('int64')
+ofelia['Anmält datum'] = pd.to_datetime(ofelia['Anmält datum'].values,format='%Y-%m-%d %H:%M:%S',errors='raise')
+
+
+
+ofelia= ofelia.sort_values(by=['Objnr'])
+ofelia.reset_index(drop=True,inplace = True)
+
+#test=ofelia.iloc[60450:]
+# modify objnr s where are in main database (ofelia)
+#ofelia1=ofelia.loc[101459:]
+ofelia1=ofelia.copy()
+ofelia_uniq=ofelia1.drop_duplicates(subset=('Objnr'))['Objnr']
+ofelia_uniq.reset_index(drop=True,inplace = True)
+
+ofelia_weather=pd.DataFrame()
+time_f=3 #time forward (time after event)
+time_b=72  #time backward (time befor event)
+other=list(zip(stations_filter['latitude'],stations_filter['longitude'])) 
+
+# extract weather parameters from API
+for obj in ofelia_uniq:
+    temp=gps[gps['objnr']==obj] # read data for each objnr 
+    temp.reset_index(drop=True,inplace = True)
+    base_location=(temp['Latitude'],temp['Longitude']) # modify GPS of the objnr
+    #print(obj , base_location)
+    close_station_t , distanc_t=find_closest_location(base_location, other) #find closest weather station
+    station_t=stations_filter.loc[(stations_filter['latitude']==close_station_t[0]) &(stations_filter['longitude']==close_station_t[1]), 'id'].values[0]
+    #print(close_station_t, station_t)
+    # extract the weather parameters of closest station and add to ofelia dataframe
+    # weather parameters are {Temperature max, Temperature min, Temperature mean, Precipitation max, Precipitation sum, Precipitation mean} for after or before of the happened event
+    df_objnr=pd.DataFrame()
+    df_objnr=ofelia1[ofelia1['Objnr']==temp['objnr'][0]]
+    df_objnr.reset_index(drop=True,inplace = True)
+    
+    weathers={}
+    par=['TemperaturePast1h','PrecipPast1h','WindSpeed','Humidity']
+    for paramet in par:
+        param_idt = smhi.get_param_value(paramet)
+        data_t= smhi.get_corrected(param_idt, station_t) 
+        data_t['Date (UTC)']= pd.to_datetime(data_t['Date (UTC)'].values , format='mix',errors='raise')
+        weathers[paramet]=data_t[(data_t['Date (UTC)']>ts1[0]) &( data_t['Date (UTC)']<ts1[1])]
+    #--------------------------------------------------------------------------------------------------------------
+    for m in ['max','min', 'mean']:
+        df_objnr['Temperature before '+m] = get_weather_b('TemperaturePast1h', time_b, m)
+        
+    for m in ['max','min', 'mean']:
+        df_objnr['Temperature after '+m] = get_weather_a('TemperaturePast1h', time_f, m)
+        
+    for m in ['max','sum', 'mean']:
+        df_objnr['Precipitation before '+m] = get_weather_b('PrecipPast1h', time_b, m)
+        
+    for m in ['max','sum', 'mean']:
+        df_objnr['Precipitation after '+m] = get_weather_a('PrecipPast1h',time_f, m)
+    
+    for m in ['max','min', 'mean']:
+        df_objnr['WindSpeed before '+m] = get_weather_b('WindSpeed', time_b, m)
+        
+    for m in ['max','min', 'mean']:
+        df_objnr['WindSpeed after '+m] = get_weather_a('WindSpeed', time_f, m)
+    
+    for m in ['max','min', 'mean']:
+        df_objnr['Humidity before '+m] = get_weather_b('Humidity', time_b, m)
+        
+    for m in ['max','min', 'mean']:
+        df_objnr['Humidity after '+m] = get_weather_a('Humidity', time_f, m)
+    #-------------------------------------------------------------------------------------------------------------------------
+    # fill nan data   
+    for m in ['max','min', 'mean']:
+        if df_objnr['Temperature before '+m].isna().sum() < 7 :
+            df_objnr['Temperature before '+m].fillna(method='ffill', inplace=True)
+    for m in ['max','min', 'mean']:
+        if df_objnr['Temperature after '+m].isna().sum() < 7:
+            df_objnr['Temperature after '+m].fillna(method='ffill', inplace=True)
+            
+    for m in ['max','sum', 'mean']:
+        if df_objnr['Precipitation before '+m].isna().sum() < 7 :
+            df_objnr['Precipitation before '+m].fillna(method='ffill', inplace=True)
+    for m in ['max','sum', 'mean']:
+        if df_objnr['Precipitation after '+m].isna().sum() < 7 :
+            df_objnr['Precipitation after '+m].fillna(method='ffill', inplace=True)
+    
+    for m in ['max','min', 'mean']:
+        if df_objnr['WindSpeed before '+m].isna().sum() < 7 :
+            df_objnr['WindSpeed before '+m].fillna(method='ffill', inplace=True)
+    for m in ['max','min', 'mean']:
+        if df_objnr['WindSpeed after '+m].isna().sum() < 7:
+            df_objnr['WindSpeed after '+m].fillna(method='ffill', inplace=True)
+    
+    for m in ['max','min', 'mean']:
+        if df_objnr['Humidity before '+m].isna().sum() < 7 :
+            df_objnr['Humidity before '+m].fillna(method='ffill', inplace=True)
+    for m in ['max','min', 'mean']:
+        if df_objnr['Humidity after '+m].isna().sum() < 7:
+            df_objnr['Humidity after '+m].fillna(method='ffill', inplace=True)
+                
+    df_objnr['weather station id']=station_t
+    df_objnr['distance(km)']=distanc_t
+    #ofelia_weather=ofelia_weather.append(df_objnr ,ignore_index=True)
+    ofelia_weather=pd.concat([ofelia_weather,df_objnr],ignore_index=True)
+    ofelia_weather.reset_index(drop=True, inplace=True) 
+
+ofelia_weather.to_csv(r'C:\Users\khosole\OneDrive - ltu.se\Khosro works\Data for Machin Learning\New database\dataframe_72houre_p1.csv')
+
+dfdf=ofelia_weather.drop_duplicates('Felrapport')
+dfdf=dfdf.dropna(subset=['Temperature before min','WindSpeed before max','Humidity before max' ,'Temperature after min','Humidity after max','WindSpeed after max'   ])
+    #%%
+ 
+df1=pd.read_csv(r'C:\Users\khosole\OneDrive - ltu.se\Khosro works\Data for Machin Learning\New database\dataframe_48houre_p1.csv', index_col=0)
+
+
+
+    
+ 
+    
+ 
